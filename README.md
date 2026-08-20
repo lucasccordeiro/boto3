@@ -18,8 +18,10 @@ buggy mutations, expected verdicts, and a recommended sequence.
 toolchain and the finding pipeline end to end. `make verify` (two phases per
 target) completes in ~2 min with 0 failures.
 
-**Three live findings, all confirmed empirically** against the real boto3 code.
-All three issue drafts are written and **unfiled**.
+**Three live findings, all confirmed empirically** against the real boto3 code,
+each with an executable pytest reproduction generated from ESBMC's
+counterexample (see [below](#from-counterexample-to-executable-test)). All three
+issue drafts are written and **unfiled**.
 
 ### Finding A — `ResourceCollection.limit(0)` returns one resource
 
@@ -134,12 +136,50 @@ make verify                                   # both phases, every target
 make phase1                                   # functional contracts only
 make phase2                                   # --overflow-check only
 make verify-only T=collection_limit_nonpositive   # one target
+make testgen                                  # regenerate pytest witnesses
+make test                                     # run the tests against real boto3
 
 # With a non-PATH ESBMC binary:
 make verify ESBMC=/path/to/esbmc
 ```
 
-Requires ESBMC ≥ 8.4.0 built with the Python frontend.
+Requires ESBMC ≥ 8.4.0 built with the Python frontend, and `pytest` for
+`make test`.
+
+## From counterexample to executable test
+
+Each live-bug witness is turned into a running test against the real boto3 in
+three steps, so the reproduction is tied to the verifier's output rather than
+to a hand transcription of it:
+
+1. `make testgen` runs each witness under
+   [`--generate-pytest-testcase`](https://esbmc.github.io/docs/python/pytest-testgen/),
+   which writes the counterexample inputs to `tests/generated/test_<harness>.py`
+   as a `@pytest.mark.parametrize` list.
+2. `tests/esbmc_witness.py` parses those values out.
+3. `tests/test_finding_*.py` applies them to the real boto3 API and asserts the
+   observed behaviour.
+
+The generated files are **parsed, never imported**. They open with
+`from <harness> import *`, and a harness is deliberately not importable under
+CPython: `harness/stubs.py` declares `nondet_int` and friends only under
+`TYPE_CHECKING`, because a runtime definition would shadow the ESBMC intrinsic,
+collapse every symbolic value to a constant, and let the whole suite pass
+vacuously. Making the generated files directly runnable would mean breaking
+that rule, so they are treated as data.
+
+Values ESBMC picked, and what each drives:
+
+| Witness | Counterexample | Drives |
+|---|---|---|
+| `collection_limit_nonpositive` | `limit=0, page_len=2` | `.limit(0)` on a real `ResourceCollection` |
+| `create_tags_missing_value` | tags `(Key,Value)` = present/present, present/present, present/**absent**; `n_resources=2` | `ec2.create_tags` with a `Value`-less tag |
+| `dynamodb_placeholder_merge` | caller binds `#n0`; `gen_count=3` | `update_item` mixing a raw expression with `ConditionExpression` |
+
+Each finding gets a bug test and a fix test **on the same witness inputs**, so
+the pair is a differential check rather than an assertion about one run. All
+three bug tests were confirmed to fail when the corresponding fix is applied to
+the real boto3 code.
 
 ## Layout
 
@@ -154,8 +194,15 @@ harness/
   dynamodb_placeholder_merge_fixed.py #  positive control: the fix     (SUCCESSFUL)
   create_tags_missing_value.py      # Finding G witness                (FAILED, LIVE BUG)
   create_tags_missing_value_fixed.py #  positive control: the fix      (SUCCESSFUL)
-verify.py                           # manifest + two-phase driver
-Makefile                            # make verify / phase1 / phase2 / verify-only
+tests/
+  esbmc_witness.py                  # parses counterexamples out of generated/
+  aws_capture.py                    # real boto3 client, request captured not sent
+  generated/                        # ESBMC --generate-pytest-testcase output
+  test_finding_a_collection_limit.py
+  test_finding_f_dynamodb_placeholders.py
+  test_finding_g_create_tags.py
+verify.py                           # manifest + two-phase driver + --testgen
+Makefile                            # verify / phase1 / phase2 / verify-only / testgen / test
 ROADMAP.md                          # the verification plan: five tiers, ~27 rows,
                                     # modelling constraints, sequence, scope
 bug-reports/                        # upstream issue drafts (all unfiled)
