@@ -209,7 +209,12 @@ items". Invisible for every positive limit.
 - Reproducer: `reproducer/finding_a_collection_limit_nonpositive.py`, driving
   the real `ResourceCollection`.
 - Issue draft: `bug-reports/finding-a-collection-limit-nonpositive.md`
-  (**unfiled**).
+  (**unfiled**). It supersedes
+  [#4670](https://github.com/boto/boto3/issues/4670), which reported this in
+  Dec 2025 and was closed as irreproducible after the reporter tested a
+  paginatable collection — the branch where botocore's `MaxItems` truncation
+  masks it. The draft leads with the real-operation reproduction on
+  `ec2.key_pairs` that answers the maintainer's question.
 
 ### Finding B (candidate) — `TransferConfig` numeric fields unvalidated
 
@@ -406,7 +411,7 @@ is the namespace collision, not the merge.
 | Witness | `harness/dynamodb_placeholder_merge.py` — Phase 1 FAILED, counterexample binds `#n0` on both sides |
 | Positive control | `harness/dynamodb_placeholder_merge_fixed.py` — skip-on-collision allocation, both phases SUCCESSFUL |
 | Reproducer | `reproducer/finding_f_dynamodb_placeholder_collision.py` — five cases incl. the fix applied to the real objects |
-| Issue draft | `bug-reports/finding-f-dynamodb-placeholder-collision.md` — **unfiled** |
+| Issue | **[boto/boto3#4831](https://github.com/boto/boto3/issues/4831)** — filed 2026-08-20, open. Text kept at `bug-reports/finding-f-dynamodb-placeholder-collision.md` |
 
 **Prior art — [#4032](https://github.com/boto/boto3/issues/4032).** The same
 defect was reported from the values side in Feb 2024 and closed in June 2024
@@ -600,6 +605,28 @@ without explicit per-item approval. Drafts live under `bug-reports/` marked
 **unfiled** until then. A draft is only ready when it has: an ESBMC witness, a
 paired positive control, a standalone reproducer against the real code, a
 concrete fix shape, and a stated reachability argument.
+
+**Search for prior art before drafting, not after.** Every finding so far had
+some: Finding F's defect was [#4032](https://github.com/boto/boto3/issues/4032)
+(closed with a workaround, root cause never identified) and Finding A's was
+[#4670](https://github.com/boto/boto3/issues/4670) (closed as irreproducible
+because both the reporter and the maintainer tested a paginatable collection).
+Neither was a reason not to file — but each changed what the report had to say
+to be worth filing, and #4670 in particular has to be answered head-on rather
+than restated.
+
+### Filed
+
+| Finding | Issue | Filed | State |
+|---|---|---|---|
+| F — DynamoDB placeholder collision | [boto/boto3#4831](https://github.com/boto/boto3/issues/4831) | 2026-08-20 | open, `bug` / `needs-triage` |
+
+### Ready, not filed
+
+| Finding | Draft | Blocker |
+|---|---|---|
+| A — `.limit(n <= 0)` | `bug-reports/finding-a-collection-limit-nonpositive.md` | none — needs your go-ahead; must reference #4670 |
+| G — `create_tags` `KeyError` | `bug-reports/finding-g-create-tags-missing-value.md` | confirm on a live account that EC2 stores a `Value`-less tag |
 
 ---
 
