@@ -1,45 +1,49 @@
-# Finding A — upstream issue report (DRAFT, not filed)
+# Finding A — ready to file at `boto/boto3`
 
-**Status:** drafted, **unfiled**. Filing requires explicit approval — see
-[`ROADMAP.md`](../ROADMAP.md) "Upstream filing policy".
+**Status: not filed.** Paste the sections below into the fields of
+<https://github.com/boto/boto3/issues/new?template=bug-report.yml>.
 
-GitHub issue text for `boto/boto3`, formatted to the repository's
-`bug-report.yml` template. Verified against upstream at commit `1b554d2`
-(boto3 1.43.75); empirically reproduced with the script at
-[`../reproducer/finding_a_collection_limit_nonpositive.py`](../reproducer/finding_a_collection_limit_nonpositive.py).
+Verified against boto3 **1.43.76** / botocore 1.43.76 (current at 2026-08-20)
+and against `develop` at commit `ced31bb7`, where `ResourceCollection.__iter__`
+still yields the item before checking the limit.
 
-- **Title:** `ResourceCollection.limit(0)` returns one resource instead of none
-- **Labels:** `bug`, `needs-triage`
+**Prior art — [#4670](https://github.com/boto/boto3/issues/4670), and this
+report exists to correct it.** That issue reported exactly this in Dec 2025.
+A maintainer asked whether it reproduced "with a real operation"; the reporter
+tested, got `[]`, and it was closed as not reproducible. **Both were testing a
+paginatable collection**, where botocore truncates on `MaxItems` before boto3's
+loops run. On a non-paginatable collection it does reproduce with a real
+operation. GitHub's bot on that issue asks for a new issue referencing it, so
+that is the route — lead with the real-operation reproduction, since its absence
+is the sole reason #4670 was closed.
+
+**Before filing:** replace *Environment details* with your own machine, and
+re-run the reproduction — the affected set drifts (see the note in *Additional
+Information*).
 
 ---
 
-**Describe the bug**
+## Title
 
-`ResourceCollection.limit(count)` documents `count` as "Return no more than
-this many items" (`boto3/resources/collection.py:244`), but for `count == 0`
-— and for any negative `count` — the collection issues a real service request
-and yields **exactly one resource**.
-
-The value is stored without validation:
-
-```python
-# boto3/resources/collection.py:231-247
-def limit(self, count):
-    # :param count: Return no more than this many items
-    return self._clone(limit=count)
+```
+ResourceCollection.limit(0) yields one resource on non-paginatable collections
 ```
 
-and both iteration loops consume an item *before* testing the limit:
+## Describe the bug
+
+`ResourceCollection.limit(count)` documents `count` as "Return no more than this
+many items" (`boto3/resources/collection.py:244`), but stores it without
+validation, and both iteration loops consume an item *before* testing the limit:
 
 ```python
-# boto3/resources/collection.py:168-184  ResourceCollection.pages
+# boto3/resources/collection.py:168-184  pages
 for item in self._handler(self._parent, params, page):
     page_items.append(item)                     # item already kept
     count += 1
-    if limit is not None and count >= limit:    # 1 >= 0 -> fires, too late
+    if limit is not None and count >= limit:    # 1 >= 0 -> too late
         break
 
-# boto3/resources/collection.py:76-87  ResourceCollection.__iter__
+# boto3/resources/collection.py:76-87  __iter__
 for item in page:
     yield item                                  # item already emitted
     count += 1
@@ -47,101 +51,65 @@ for item in page:
         return
 ```
 
-With `limit = 0` the guard fires on the first item in both loops, but that
-item has already been appended and yielded. The off-by-one is invisible for
-every positive limit, which is why it is not caught by the existing tests.
+`pages()` branches on `client.can_paginate` (`collection.py:145-164`). On the
+paginatable branch the limit is *also* sent to botocore as
+`PaginationConfig={'MaxItems': limit}`, and truncation there hides the defect —
+which is why #4670 was closed. On the non-paginatable branch (`:164`) there is
+no truncation, and these loops are the only thing enforcing the limit.
 
-**Regression Issue**
+## Regression Issue
 
-No — the loop shape dates back to the original collections implementation.
+No. Present since the collections implementation was introduced; still on
+`develop` at `ced31bb7`.
 
-**Expected Behavior**
+## Expected Behavior
 
-`collection.limit(0)` yields no resources. A negative `count` either yields no
-resources or raises `ValueError` at the `limit()` call — rejecting it at
-`limit()` would also stop a negative value reaching botocore's `MaxItems`,
-where it is used as a slice bound.
+`limit(0)` yields no resources. A negative `count` yields none, or raises
+`ValueError` at the `limit()` call — which would also stop a negative value
+reaching botocore's `MaxItems`, where it is used as a slice bound.
 
-**Current Behavior**
+## Current Behavior
 
-`s3.buckets.limit(0)` yields one bucket, after issuing a real `ListBuckets`
-request. `limit(-1)` and `limit(-5)` behave identically.
+`ec2.key_pairs.limit(0)` yields one key pair, after issuing a real
+`DescribeKeyPairs` request. `limit(-1)` and `limit(-5)` behave identically:
 
-Which collections are affected depends on the branch taken at
-`collection.py:147-164`:
-
-| Collection | `.limit(0)` | `.limit(-n)` |
-|---|---|---|
-| Not paginatable — `s3.buckets`, `ec2.key_pairs`, `ec2.classic_addresses`, `ec2.vpc_addresses`, `iam.saml_providers`, `opsworks.stacks`, and 25 others | **1 resource** | **1 resource** |
-| Paginatable — `bucket.objects`, and most others | 0 (see below) | **1 resource** while `n < page_len` |
-
-For paginatable collections the limit is *also* passed to botocore as
-`PaginationConfig={'MaxItems': limit}`, and `PageIterator._truncate_response`
-keeps `original[:max_items]` (`botocore/paginate.py:291-296`, `:421-448`). At
-`limit == 0` that slice is empty, so the loops below never see an item and the
-defect is hidden. At a small negative limit the slice is *negative* — it drops
-the last `n` items instead of truncating to zero — so a page still arrives and
-the loops yield one resource from it.
-
-**Reproduction Steps**
-
-```python
-import boto3
-from boto3.resources.collection import ResourceCollection
-
-
-class _Meta:
-    service_name = 'fake'
-    def __init__(self, client): self.client = client
-
-class _Client:
-    def can_paginate(self, name): return True
-    def get_paginator(self, name): return self
-    def paginate(self, **kwargs):
-        return [{'Items': ['a', 'b', 'c']}, {'Items': ['d', 'e']}]
-
-class _Parent:
-    def __init__(self, client): self.meta = _Meta(client)
-
-class _Request:
-    operation = 'ListThings'
-    params = []
-
-class _Model:
-    request = _Request()
-    resource = type('R', (), {'type': 'Thing'})()
-
-
-def handler(parent, params, page):
-    return list(page['Items'])
-
-
-coll = ResourceCollection(_Model(), _Parent(_Client()), handler)
-print(list(coll.limit(3)))   # ['a', 'b', 'c']   correct
-print(list(coll.limit(0)))   # ['a']             expected []
-print(list(coll.limit(-5)))  # ['a']             expected [] (or ValueError)
+```
+ec2.key_pairs.limit(None) -> ['alpha', 'beta', 'gamma']
+ec2.key_pairs.limit(   2) -> ['alpha', 'beta']
+ec2.key_pairs.limit(   0) -> ['alpha']            expected []
+ec2.key_pairs.limit(  -5) -> ['alpha']            expected []
 ```
 
-Against a real service resource, using the non-paginatable `s3.buckets`:
+Paginatable collections are affected too, for small negative limits.
+`_truncate_response` keeps `original[:max_items]`
+(botocore `PageIterator.__iter__` at `paginate.py:295-297`, `_truncate_response` at `:429-459`, on botocore `develop`); a negative `max_items` makes that
+a negative slice, dropping the last `n` items instead of truncating to zero, so
+a page still arrives and the loops yield one resource from it:
+
+```
+bucket.objects.limit( 0) -> []                    masked
+bucket.objects.limit(-1) -> ['a.txt']             expected []
+```
+
+## Reproduction Steps
+
+Against a real account, no stubbing:
 
 ```python
 import boto3
 
-s3 = boto3.resource('s3')
-print(len(list(s3.buckets.limit(0))))   # 1, expected 0
-print(len(list(s3.buckets.limit(-5))))  # 1, expected 0
-print(len(list(s3.buckets.limit(2))))   # 2, correct
+ec2 = boto3.resource('ec2')            # needs >=2 key pairs in the region
+print([k.name for k in ec2.key_pairs.limit(0)])    # ['<first>'], expected []
+print([k.name for k in ec2.key_pairs.limit(-5)])   # ['<first>'], expected []
+print([k.name for k in ec2.key_pairs.limit(2)])    # 2 names, correct
 ```
 
-and on a paginatable one, where only negative limits get through:
+`ec2.key_pairs` is used because `DescribeKeyPairs` has no paginator, which is
+what puts it on the branch at `collection.py:164`. Any of the seven collections
+listed below behaves the same. Using a paginatable collection such as
+`bucket.objects` is what made #4670 look irreproducible.
 
-```python
-objects = s3.Bucket('some-bucket').objects   # assume >2 objects
-print(len(list(objects.limit(0))))    # 0, masked by botocore
-print(len(list(objects.limit(-1))))   # 1, expected 0
-```
-
-**Possible Solution**
+## Possible Solution
 
 Test the limit before consuming the item, in both loops:
 
@@ -161,40 +129,36 @@ for item in page:
     count += 1
 ```
 
-This also fixes the negative case. If rejecting negatives outright is
-preferred, add a check in `limit()`:
+This also fixes the negative case. Alternatively, or additionally, reject a
+negative `count` in `limit()`.
 
-```python
-def limit(self, count):
-    if count is not None and count < 0:
-        raise ValueError('count must be non-negative')
-    return self._clone(limit=count)
+## Additional Information/Context
+
+- Affected code: `boto3/resources/collection.py:76-87` (`__iter__`),
+  `:168-184` (`pages`), `:231-247` (`limit`).
+- On boto3 1.43.76, 7 of the 88 collections in `boto3/data/**/resources-1.json`
+  use a non-paginatable operation: `ec2.key_pairs`, `ec2.placement_groups`,
+  `ec2.classic_addresses`, `ec2.vpc_addresses`, `Instance.vpc_addresses`,
+  `cloudwatch Metric.alarms`, `iam.saml_providers`.
+- That set drifts with botocore's paginator data. `s3.buckets` was on it until
+  botocore added a `ListBuckets` paginator, which silently moved it to the
+  masked branch — so a collection that reproduces today may stop, and vice
+  versa, without boto3 changing at all.
+- `page_size(count)` (`collection.py:249-260`) is unvalidated on the same path.
+- Supersedes #4670, closed because it was only reproduced with a synthetic
+  `ResourceCollection` subclass.
+- Found with [ESBMC](https://github.com/esbmc/esbmc) bounded model checking over
+  both loops with a symbolic limit; the counterexample is `limit = 0`,
+  `delivered = 1`.
+
+## SDK version used
+
+```
+boto3 1.43.76 / botocore 1.43.76; also reproduced on 1.34.46. Code path unchanged on develop at ced31bb7.
 ```
 
-**Additional Information/Context**
+## Environment details (OS name and version, etc.)
 
-- Affected code (commit `1b554d2`):
-  - `boto3/resources/collection.py:76-87` — `ResourceCollection.__iter__`
-  - `boto3/resources/collection.py:168-184` — `ResourceCollection.pages`
-  - `boto3/resources/collection.py:231-247` — `ResourceCollection.limit`
-- Reachability was checked against the bundled resource models: 31 of the
-  278 collections defined in `boto3/data/**/resources-1.json` use a
-  non-paginatable operation and therefore take the `else` branch at
-  `collection.py:164`, where these loops are the only thing enforcing the
-  limit.
-- `page_size(count)` (`collection.py:249-260`) is unvalidated on the same
-  path; `PageSize: 0` / a negative page size is forwarded verbatim to
-  botocore's `PaginationConfig` at `collection.py:154`.
-- Found with [ESBMC](https://github.com/esbmc/esbmc) bounded model checking
-  over both loops with a symbolic limit; the counterexample is `limit = 0`,
-  `delivered = 1`. Confirmed with a standalone reproducer driving the real
-  `ResourceCollection` class.
-
-**SDK version used**
-
-1.43.75 (commit `1b554d2`); also reproduced on 1.34.46 — the bodies of
-`__iter__`, `pages`, `limit` and `page_size` are AST-identical across the two.
-
-**Environment details (OS name and version, etc.)**
-
-Linux x86_64, CPython 3.12.3.
+```
+Ubuntu 24.04.4 LTS, x86_64, CPython 3.12.3
+```

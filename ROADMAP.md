@@ -521,9 +521,11 @@ different subsystems.
   real caller can get there. Finding A is the cautionary case: the witness and
   the first reproducer both used a client that ignored `PaginationConfig`, and
   on a *paginatable* collection botocore truncates on `MaxItems` before boto3's
-  loops run, so `.limit(0)` is masked. The finding survives — 31 bundled
-  collections are not paginatable, and negative limits get through on the
-  paginatable ones too — but the scope in the first draft was wrong. Check every
+  loops run, so `.limit(0)` is masked. The finding survives — 7 of the 88
+  bundled collections are not paginatable on boto3 1.43.76, and negative limits
+  get through on the paginatable ones too — but the scope in the first draft was
+  wrong, and the affected set drifts with botocore's paginator data (`s3.buckets`
+  left it when `ListBuckets` gained a paginator). Check every
   finding against a real service resource with a captured request before
   believing the blast radius, and pin the answer in a test
   (`tests/test_finding_a_reachability.py`).

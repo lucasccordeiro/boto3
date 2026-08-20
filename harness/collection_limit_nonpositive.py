@@ -33,7 +33,7 @@
 # (collection.py:244). The off-by-one is invisible for every positive
 # limit, which is why it survives the test suite.
 #
-# REACHABILITY. `pages()` has two branches (collection.py:147-164):
+# REACHABILITY. `pages()` has two branches (collection.py:145-164):
 # when `client.can_paginate(op)` the limit is *also* passed to botocore
 # as `PaginationConfig={'MaxItems': limit}`, and botocore truncates to
 # zero items before these loops ever run -- so the defect is masked on
@@ -41,9 +41,14 @@
 # single un-truncated call, and there the loops below are the only
 # thing enforcing the limit. This harness models that branch: pages
 # arrive with `page_len >= 1` items regardless of `limit`, which is
-# exactly the no-MaxItems case. 31 bundled collections take it,
-# including `s3.buckets`, `ec2.key_pairs`, `ec2.classic_addresses`,
-# `ec2.vpc_addresses`, `iam.saml_providers` and `opsworks.stacks`.
+# exactly the no-MaxItems case. On boto3 1.43.76, seven of the 88
+# bundled collections take it: `ec2.key_pairs`, `ec2.placement_groups`,
+# `ec2.classic_addresses`, `ec2.vpc_addresses`,
+# `Instance.vpc_addresses`, `cloudwatch Metric.alarms` and
+# `iam.saml_providers`. The set drifts -- `s3.buckets` was on it until
+# botocore added a `ListBuckets` paginator, which silently moved it to
+# the masked branch -- so the tests assert the precondition rather than
+# assume it.
 #
 # Harness shape: inline both loops verbatim over a symbolic limit and
 # a symbolic page length. The item payload is irrelevant -- neither
