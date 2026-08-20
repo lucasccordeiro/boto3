@@ -55,6 +55,22 @@ if expr_attr_values_input in params:
 `dict.update` overwrites on key collision, and `#n0` / `:v0` are ordinary
 placeholder names that nothing documents as reserved.
 
+The caller does not have to invent those names to hit this. boto3's own public
+`ConditionExpressionBuilder` hands them out:
+
+```python
+>>> from boto3.dynamodb.conditions import Attr, ConditionExpressionBuilder
+>>> built = ConditionExpressionBuilder().build_expression(Attr('colour').eq('red'))
+>>> built.condition_expression, built.attribute_name_placeholders
+('#n0 = :v0', {'#n0': 'colour'})
+```
+
+Feeding that result back into `update_item` — the documented way to build an
+expression by hand — alongside an `Attr(...)` condition is enough. Note also
+that the combination itself is ordinary: `update_item` has no `Attr`-based
+builder for `UpdateExpression`, so a conditional update *must* mix a raw
+update expression with a generated condition.
+
 **Regression Issue**
 
 No — the merge and the unconditional `reset()` both date back to the
@@ -203,7 +219,8 @@ not.
   exists only in the request that is sent, which is why it cannot be caught by
   inspecting the arguments after the call.
 - Mixing raw expressions with `Attr(...)`/`Key(...)` conditions is not
-  documented as unsupported, and `#n<N>` is not documented as reserved.
+  documented as unsupported, and `#n<N>` is not documented as reserved — it is
+  the exact namespace `ConditionExpressionBuilder` produces for callers.
 - Found with [ESBMC](https://github.com/esbmc/esbmc) bounded model checking
   over the merge with a symbolic caller mapping and a symbolic generated
   prefix; the counterexample binds `#n0` on both sides. Confirmed with a

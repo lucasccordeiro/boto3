@@ -58,13 +58,30 @@ No — the loop shape dates back to the original collections implementation.
 **Expected Behavior**
 
 `collection.limit(0)` yields no resources. A negative `count` either yields no
-resources or raises `ValueError` at the `limit()` call.
+resources or raises `ValueError` at the `limit()` call — rejecting it at
+`limit()` would also stop a negative value reaching botocore's `MaxItems`,
+where it is used as a slice bound.
 
 **Current Behavior**
 
-`collection.limit(0)` yields one resource, after issuing a service request
-with `PaginationConfig={'MaxItems': 0, 'PageSize': None}`. `limit(-1)` and
-`limit(-5)` behave identically.
+`s3.buckets.limit(0)` yields one bucket, after issuing a real `ListBuckets`
+request. `limit(-1)` and `limit(-5)` behave identically.
+
+Which collections are affected depends on the branch taken at
+`collection.py:147-164`:
+
+| Collection | `.limit(0)` | `.limit(-n)` |
+|---|---|---|
+| Not paginatable — `s3.buckets`, `ec2.key_pairs`, `ec2.classic_addresses`, `ec2.vpc_addresses`, `iam.saml_providers`, `opsworks.stacks`, and 25 others | **1 resource** | **1 resource** |
+| Paginatable — `bucket.objects`, and most others | 0 (see below) | **1 resource** while `n < page_len` |
+
+For paginatable collections the limit is *also* passed to botocore as
+`PaginationConfig={'MaxItems': limit}`, and `PageIterator._truncate_response`
+keeps `original[:max_items]` (`botocore/paginate.py:291-296`, `:421-448`). At
+`limit == 0` that slice is empty, so the loops below never see an item and the
+defect is hidden. At a small negative limit the slice is *negative* — it drops
+the last `n` items instead of truncating to zero — so a page still arrives and
+the loops yield one resource from it.
 
 **Reproduction Steps**
 
@@ -105,8 +122,24 @@ print(list(coll.limit(0)))   # ['a']             expected []
 print(list(coll.limit(-5)))  # ['a']             expected [] (or ValueError)
 ```
 
-The same is observable against a live service, e.g.
-`list(s3.Bucket('some-bucket').objects.limit(0))` returns one `ObjectSummary`.
+Against a real service resource, using the non-paginatable `s3.buckets`:
+
+```python
+import boto3
+
+s3 = boto3.resource('s3')
+print(len(list(s3.buckets.limit(0))))   # 1, expected 0
+print(len(list(s3.buckets.limit(-5))))  # 1, expected 0
+print(len(list(s3.buckets.limit(2))))   # 2, correct
+```
+
+and on a paginatable one, where only negative limits get through:
+
+```python
+objects = s3.Bucket('some-bucket').objects   # assume >2 objects
+print(len(list(objects.limit(0))))    # 0, masked by botocore
+print(len(list(objects.limit(-1))))   # 1, expected 0
+```
 
 **Possible Solution**
 
@@ -144,6 +177,11 @@ def limit(self, count):
   - `boto3/resources/collection.py:76-87` — `ResourceCollection.__iter__`
   - `boto3/resources/collection.py:168-184` — `ResourceCollection.pages`
   - `boto3/resources/collection.py:231-247` — `ResourceCollection.limit`
+- Reachability was checked against the bundled resource models: 31 of the
+  278 collections defined in `boto3/data/**/resources-1.json` use a
+  non-paginatable operation and therefore take the `else` branch at
+  `collection.py:164`, where these loops are the only thing enforcing the
+  limit.
 - `page_size(count)` (`collection.py:249-260`) is unvalidated on the same
   path; `PageSize: 0` / a negative page size is forwarded verbatim to
   botocore's `PaginationConfig` at `collection.py:154`.

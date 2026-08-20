@@ -33,6 +33,18 @@
 # (collection.py:244). The off-by-one is invisible for every positive
 # limit, which is why it survives the test suite.
 #
+# REACHABILITY. `pages()` has two branches (collection.py:147-164):
+# when `client.can_paginate(op)` the limit is *also* passed to botocore
+# as `PaginationConfig={'MaxItems': limit}`, and botocore truncates to
+# zero items before these loops ever run -- so the defect is masked on
+# every paginatable collection. The `else` branch at :164 issues a
+# single un-truncated call, and there the loops below are the only
+# thing enforcing the limit. This harness models that branch: pages
+# arrive with `page_len >= 1` items regardless of `limit`, which is
+# exactly the no-MaxItems case. 31 bundled collections take it,
+# including `s3.buckets`, `ec2.key_pairs`, `ec2.classic_addresses`,
+# `ec2.vpc_addresses`, `iam.saml_providers` and `opsworks.stacks`.
+#
 # Harness shape: inline both loops verbatim over a symbolic limit and
 # a symbolic page length. The item payload is irrelevant -- neither
 # loop inspects it -- so a page is modelled by its length. The

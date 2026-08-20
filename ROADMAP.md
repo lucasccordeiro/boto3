@@ -154,7 +154,7 @@ convergence — do not lower the bound.
 
 ## Already covered
 
-Eight targets, `make verify` green in ~2 min, plus 13 pytest reproductions
+Eight targets, `make verify` green in ~2 min, plus 24 pytest reproductions
 (`make test`) driven by ESBMC's own counterexamples. This is the seed that proves the
 toolchain, the driver, and the finding pipeline end to end — not a claim of
 coverage.
@@ -506,6 +506,18 @@ different subsystems.
   `reproducer/` before filing, as with the list-parameter case; the prior PoCs
   had three of four such reports fixed upstream, and each fix removed a
   workaround from the harnesses.
+- **Reachability is a separate question from the counterexample.** An ESBMC
+  witness says the modelled loop can violate its contract; it does not say a
+  real caller can get there. Finding A is the cautionary case: the witness and
+  the first reproducer both used a client that ignored `PaginationConfig`, and
+  on a *paginatable* collection botocore truncates on `MaxItems` before boto3's
+  loops run, so `.limit(0)` is masked. The finding survives — 31 bundled
+  collections are not paginatable, and negative limits get through on the
+  paginatable ones too — but the scope in the first draft was wrong. Check every
+  finding against a real service resource with a captured request before
+  believing the blast radius, and pin the answer in a test
+  (`tests/test_finding_a_reachability.py`).
+
 - **Reproducer discipline.** Each candidate finding gets a script under
   `reproducer/` that drives the real boto3 class, prints the wrong behaviour
   *and* the fixed behaviour side by side, and asserts the difference so it

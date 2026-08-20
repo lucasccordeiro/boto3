@@ -51,7 +51,25 @@ for item in page:
 ```
 
 The off-by-one is invisible for every positive limit, which is why it survives
-the test suite. `harness/collection_limit_nonpositive.py` is the ESBMC witness
+the test suite.
+
+**Reachability.** `pages()` branches on `client.can_paginate` at
+`collection.py:147-164`, and the two branches behave differently:
+
+| Collection | `.limit(0)` | `.limit(-n)` |
+|---|---|---|
+| Not paginatable — `s3.buckets`, `ec2.key_pairs`, `ec2.classic_addresses`, `iam.saml_providers`, `opsworks.stacks`, 31 in all | **1 resource** | **1 resource** |
+| Paginatable — `bucket.objects`, most others | 0, masked | **1 resource** while `n < page_len` |
+
+On the paginatable branch the limit also reaches botocore as
+`PaginationConfig={'MaxItems': limit}`, and `_truncate_response` keeps
+`original[:max_items]`. At `0` that slice is empty and the defect is hidden; at
+a small negative limit the slice is *negative*, dropping the last `n` items
+rather than truncating to zero, so a page still arrives and the loops yield one
+resource from it. `tests/test_finding_a_reachability.py` pins both branches
+against real service resources.
+
+`harness/collection_limit_nonpositive.py` is the ESBMC witness
 (counterexample: `limit = 0`, `delivered = 1`);
 `reproducer/finding_a_collection_limit_nonpositive.py` reproduces it against
 the real `ResourceCollection` class; `harness/collection_limit_honored.py`
@@ -60,6 +78,13 @@ verifies the proposed fix (SUCCESSFUL, both phases). The issue draft in
 filing policy".
 
 ### Finding F — DynamoDB placeholders overwrite the caller's
+
+**Reachability.** The caller does not have to invent `#n0`: boto3's own public
+`ConditionExpressionBuilder` produces it, and feeding its output back into
+`update_item` alongside an `Attr(...)` condition is enough. The combination is
+also ordinary — `update_item` has no `Attr`-based builder for
+`UpdateExpression`, so a conditional update must mix a raw expression with a
+generated condition.
 
 boto3 generates DynamoDB placeholder names starting at `#n0` / `:v0` on every
 request (`conditions.py:313-322`, reset at `transform.py:172`), then merges

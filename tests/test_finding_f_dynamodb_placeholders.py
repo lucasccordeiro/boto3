@@ -126,6 +126,35 @@ def test_generated_placeholders_replace_the_callers():
     assert body["UpdateExpression"] == _update_expression()
 
 
+def test_public_builder_hands_the_caller_a_colliding_name():
+    """Reachability: the caller need not invent `#n0`.
+
+    `ConditionExpressionBuilder` is public and documented, and its
+    output is exactly the namespace the merge then overwrites.
+    """
+    from boto3.dynamodb.conditions import ConditionExpressionBuilder
+
+    built = ConditionExpressionBuilder().build_expression(
+        Attr("colour").eq("red")
+    )
+    assert built.condition_expression == "#n0 = :v0"
+    assert built.attribute_name_placeholders == {"#n0": "colour"}
+
+    sent = []
+    resource = capturing_resource("dynamodb", b"{}", sent)
+    resource.Table("Things").update_item(
+        Key={"id": "x"},
+        UpdateExpression=f"SET {built.condition_expression}",
+        ExpressionAttributeNames=built.attribute_name_placeholders,
+        ExpressionAttributeValues=built.attribute_value_placeholders,
+        ConditionExpression=Attr("locked").eq(False),
+    )
+    body = json.loads(sent[0])
+
+    assert body["ExpressionAttributeNames"] == {"#n0": "locked"}
+    assert body["ExpressionAttributeValues"] == {":v0": {"BOOL": False}}
+
+
 def test_placeholders_outside_the_generated_namespace_survive():
     """Control: the defect is the collision, not the merge itself."""
     sent = []
