@@ -60,6 +60,30 @@ TARGETS: list[Target] = [
         expected="FAILED",
         safety_expected=None,
     ),
+    # --- Tier 2: silent acceptance of unvalidated parameters -------
+    Target(
+        # Finding A witness: ResourceCollection.limit(n) for n <= 0.
+        # boto3/resources/collection.py:76-87 (__iter__) and
+        # :168-184 (pages()). Both loops count the item BEFORE testing
+        # the limit, so a non-positive limit yields exactly one item
+        # instead of zero. Phase 1 FAILED is the expected and
+        # significant verdict -- the counterexample IS the bug report.
+        name="collection_limit_nonpositive",
+        entry="collection_limit_nonpositive.py",
+        esbmc_args=("--unwind", "6"),
+        expected="FAILED",
+        safety_expected=None,
+    ),
+    Target(
+        # Positive control modelling the proposed fix (test the limit
+        # before yielding). Confirms the Finding A harness shape is
+        # non-vacuous: same loop, corrected guard, SUCCESSFUL.
+        name="collection_limit_honored",
+        entry="collection_limit_honored.py",
+        esbmc_args=("--unwind", "6"),
+        expected="SUCCESSFUL",
+        safety_expected="SUCCESSFUL",
+    ),
 ]
 
 
