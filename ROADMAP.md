@@ -72,6 +72,14 @@ Unchanged from the prior PoCs; restated so this document stands alone.
    only what the target reads. Do not invent behaviour a caller does not rely
    on — an over-specified stub turns a real counterexample into a harness
    artefact.
+5b. **The counterexample drives the reproduction.** Live-bug witnesses are
+   marked `testcase=True` in `verify.py` and emitted as pytest witnesses by
+   `make testgen`
+   ([`--generate-pytest-testcase`](https://esbmc.github.io/docs/python/pytest-testgen/)).
+   `tests/` parses the values out and applies them to the real boto3 API, so
+   the executable reproduction cannot drift from what the verifier actually
+   found. The generated files are parsed, never imported — a harness is not
+   importable under CPython by design (see C6).
 5. **No finding is filed on an ESBMC verdict alone.** A counterexample is a
    hypothesis about the source; it becomes a finding only after a standalone
    CPython reproducer drives the *real* boto3 code and shows the behaviour.
@@ -123,6 +131,18 @@ inputs. Every realistic boto3 quantity (page sizes, item limits, part counts,
 batch sizes) is far below 1024, so `SMALL_BOUND` is not a real restriction on
 coverage — say so in the harness header rather than leaving it implied.
 
+**C6 — generated pytest files are data, not tests.** ESBMC writes
+`from <harness> import *` at the top of every generated file and derives the
+call signature from the nondet assignments, so
+`test_main(limit, page_len)` calls a `main()` that takes no arguments. Neither
+is fixable without making harnesses runtime-importable, and that is forbidden:
+`harness/stubs.py` keeps the nondet intrinsics under `TYPE_CHECKING` precisely
+so no runtime definition can shadow them and collapse the suite into a vacuous
+pass. **Workaround:** parse the `@pytest.mark.parametrize` list
+(`tests/esbmc_witness.py`) and apply the values to the real API by hand. **To
+do:** worth raising upstream — a `--pytest-values-only` emitting just the
+witness dict would remove the parsing step.
+
 **C5 — `--unwind`, never `--no-unwinding-assertions`.** Two planned targets
 (Tier 2 row 4, Tier 3 row 3) prove **non-termination** by showing a loop
 cannot fit inside its bound. That argument is only sound with unwinding
@@ -134,7 +154,8 @@ convergence — do not lower the bound.
 
 ## Already covered
 
-Eight targets, `make verify` green in ~2 min. This is the seed that proves the
+Eight targets, `make verify` green in ~2 min, plus 13 pytest reproductions
+(`make test`) driven by ESBMC's own counterexamples. This is the seed that proves the
 toolchain, the driver, and the finding pipeline end to end — not a claim of
 coverage.
 
@@ -144,6 +165,7 @@ coverage.
 | Tier 2 — silent acceptance | `collection_limit_nonpositive` (witness), `collection_limit_honored` (positive control) | Witness Phase 1 FAILED at `limit = 0`, `delivered = 1`. Control SUCCESSFUL both phases. **Finding A confirmed empirically** against the real `ResourceCollection`. |
 | Tier 4 — data integrity | `dynamodb_placeholder_merge` (witness), `dynamodb_placeholder_merge_fixed` (positive control) | Witness Phase 1 FAILED with the caller and the generator both binding `#n0`. Control SUCCESSFUL both phases. **Finding F confirmed empirically** — the captured request writes an attribute the caller never named. |
 | Tier 3 — bare exceptions | `create_tags_missing_value` (witness), `create_tags_missing_value_fixed` (positive control) | Witness Phase 1 FAILED with a tag carrying `Key` and no `Value`. Control SUCCESSFUL both phases. **Finding G confirmed** — the request is issued, then boto3 raises `KeyError`. |
+| Test generation | `tests/` + `tests/generated/` | `make testgen` runs each live-bug witness under `--generate-pytest-testcase`; the emitted counterexample drives the real boto3 API in `tests/test_finding_*.py`. Each finding has a bug test and a fix test on the same inputs, and every bug test was confirmed to fail when the fix is applied to real boto3. |
 | Frontend | — | ESBMC-Python constraint C1 found and reduced while writing `all_not_none`; reproducer committed. |
 
 ---
@@ -487,7 +509,9 @@ different subsystems.
 - **Reproducer discipline.** Each candidate finding gets a script under
   `reproducer/` that drives the real boto3 class, prints the wrong behaviour
   *and* the fixed behaviour side by side, and asserts the difference so it
-  fails loudly if upstream changes. `finding_a_collection_limit_nonpositive.py`
+  fails loudly if upstream changes. Once confirmed it also gets a pytest module
+  under `tests/`, parameterised by ESBMC's counterexample rather than by
+  hand-chosen values. `finding_a_collection_limit_nonpositive.py`
   is the template.
 - **Version drift.** boto3 releases roughly daily. When a reproducer must run
   against a different installed release than the pin, compare the ASTs of the

@@ -23,6 +23,7 @@ from dataclasses import dataclass
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 HARNESS_DIR = os.path.join(ROOT, "harness")
+GENERATED_DIR = os.path.join(ROOT, "tests", "generated")
 ESBMC = os.environ.get("ESBMC", "esbmc")
 
 # Phase-2 base flag set. Targets may append their own.
@@ -37,6 +38,7 @@ class Target:
     expected: str | None = "SUCCESSFUL"         # Phase-1 verdict, None to skip
     safety_args: tuple[str, ...] = _SAFETY      # extra Phase-2 args
     safety_expected: str | None = "SUCCESSFUL"  # Phase-2 verdict, None to skip
+    testcase: bool = False                      # emit a pytest witness
 
 
 TARGETS: list[Target] = [
@@ -73,6 +75,7 @@ TARGETS: list[Target] = [
         esbmc_args=("--unwind", "6"),
         expected="FAILED",
         safety_expected=None,
+        testcase=True,
     ),
     Target(
         # Positive control modelling the proposed fix (test the limit
@@ -97,6 +100,7 @@ TARGETS: list[Target] = [
         esbmc_args=("--unwind", "4"),
         expected="FAILED",
         safety_expected=None,
+        testcase=True,
     ),
     Target(
         # Positive control modelling the proposed fix
@@ -125,6 +129,7 @@ TARGETS: list[Target] = [
         esbmc_args=("--unwind", "4"),
         expected="FAILED",
         safety_expected=None,
+        testcase=True,
     ),
     Target(
         # Positive control modelling the proposed fix (allocate the
@@ -210,9 +215,42 @@ def _run_target(target: Target, phases: tuple[int, ...]) -> int:
     return failures
 
 
+def _run_testgen(target: Target) -> int:
+    """Emit ESBMC's counterexample for `target` as a pytest witness.
+
+    The generated file is data, not a runnable test: it opens with
+    `from <harness> import *`, and a harness is deliberately not
+    importable under CPython (harness/stubs.py declares the nondet
+    intrinsics only under TYPE_CHECKING, because a runtime definition
+    would shadow them and make the suite pass vacuously). The tests
+    under tests/ parse the values out and drive the real boto3 code
+    with them -- see tests/esbmc_witness.py.
+    """
+    args = target.esbmc_args + (
+        "--generate-pytest-testcase",
+        "--pytest-output-dir",
+        GENERATED_DIR,
+    )
+    verdict, _, tail = _run_esbmc(target.entry, args)
+    produced = os.path.join(GENERATED_DIR, f"test_{target.name}.py")
+
+    # A witness only exists when ESBMC found the counterexample.
+    if verdict != "FAILED":
+        print(f"  FAIL: expected FAILED to yield a witness, got {verdict}")
+        print(f"      tail: {tail!r}")
+        return 1
+    if not os.path.exists(produced):
+        print(f"  FAIL: no witness written to {produced}")
+        return 1
+    print(f"  wrote {os.path.relpath(produced, ROOT)}")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--phase", choices=("1", "2", "all"), default="all")
+    ap.add_argument("--testgen", action="store_true",
+                    help="regenerate pytest witnesses instead of verifying")
     ap.add_argument("--only", nargs="*", default=None,
                     help="restrict to target names")
     args = ap.parse_args()
@@ -227,6 +265,17 @@ def main() -> int:
             return 2
 
     total_failures = 0
+    if args.testgen:
+        os.makedirs(GENERATED_DIR, exist_ok=True)
+        for t in selected:
+            if not t.testcase:
+                continue
+            print(f"== {t.name} ==")
+            total_failures += _run_testgen(t)
+        print()
+        print(f"total failures: {total_failures}")
+        return 1 if total_failures else 0
+
     for t in selected:
         print(f"== {t.name} ==")
         total_failures += _run_target(t, phases)
