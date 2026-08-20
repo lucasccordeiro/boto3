@@ -408,6 +408,16 @@ is the namespace collision, not the merge.
 | Reproducer | `reproducer/finding_f_dynamodb_placeholder_collision.py` — five cases incl. the fix applied to the real objects |
 | Issue draft | `bug-reports/finding-f-dynamodb-placeholder-collision.md` — **unfiled** |
 
+**Prior art — [#4032](https://github.com/boto/boto3/issues/4032).** The same
+defect was reported from the values side in Feb 2024 and closed in June 2024
+with a workaround ("write the condition as a raw string"); the root cause was
+never identified. That report is also the better reproduction: the caller used
+`:v1`, an entirely ordinary name, and `is_in(['foo', 'bar'])` generates `:v0`
+and `:v1`, so the generated `:v1='bar'` replaced their `:v1=321` and the update
+wrote `'bar'`. The collision therefore needs no unusual placeholder naming —
+any `#n<k>` / `:v<k>` below the generated count collides. Still present on
+`develop` at `ced31bb7` (2026-08-20).
+
 Fix shape: reserve the keys already in `params` before the builder runs and
 skip a taken suffix, so the condition gets `#n1`/`:v1` and the caller keeps
 `#n0`/`:v0`. Demonstrated end to end against the real objects in step 5 of the
