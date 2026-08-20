@@ -84,6 +84,31 @@ TARGETS: list[Target] = [
         expected="SUCCESSFUL",
         safety_expected="SUCCESSFUL",
     ),
+    # --- Tier 3: bare exceptions at the API boundary ---------------
+    Target(
+        # Finding G witness: EC2 create_tags with a tag omitting Value.
+        # ec2/createtags.py:38 dereferences tag['Key'] / tag['Value']
+        # unguarded, AFTER the CreateTags request has been issued at
+        # :27. The EC2 `Tag` shape has no required members, so botocore
+        # cannot reject the call. Phase 1 FAILED is the expected
+        # verdict -- the counterexample IS the bug report.
+        name="create_tags_missing_value",
+        entry="create_tags_missing_value.py",
+        esbmc_args=("--unwind", "4"),
+        expected="FAILED",
+        safety_expected=None,
+    ),
+    Target(
+        # Positive control modelling the proposed fix
+        # (tag.get('Value', ''), the value EC2 itself stores). Confirms
+        # the Finding G harness is non-vacuous: same admitted input
+        # domain, same ordering invariant, SUCCESSFUL.
+        name="create_tags_missing_value_fixed",
+        entry="create_tags_missing_value_fixed.py",
+        esbmc_args=("--unwind", "4"),
+        expected="SUCCESSFUL",
+        safety_expected="SUCCESSFUL",
+    ),
 ]
 
 
