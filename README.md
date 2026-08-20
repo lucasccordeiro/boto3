@@ -21,7 +21,8 @@ target) completes in ~2 min with 0 failures.
 **Three live findings, all confirmed empirically** against the real boto3 code,
 each with an executable pytest reproduction generated from ESBMC's
 counterexample (see [below](#from-counterexample-to-executable-test)). All three
-issue drafts are written and **unfiled**.
+Finding F is filed upstream as
+**[boto/boto3#4831](https://github.com/boto/boto3/issues/4831)**; the other two drafts are written and unfiled.
 
 ### Finding A — `ResourceCollection.limit(0)` returns one resource
 
@@ -78,8 +79,10 @@ against real service resources.
 `reproducer/finding_a_collection_limit_nonpositive.py` reproduces it against
 the real `ResourceCollection` class; `harness/collection_limit_honored.py`
 verifies the proposed fix (SUCCESSFUL, both phases). The issue draft in
-[`bug-reports/`](./bug-reports/) is **not filed** — see ROADMAP.md "Upstream
-filing policy".
+[`bug-reports/`](./bug-reports/) is **not filed** — it supersedes
+[boto/boto3#4670](https://github.com/boto/boto3/issues/4670), which reported this
+in Dec 2025 and was closed as irreproducible after the reporter tested a
+paginatable collection. See ROADMAP.md "Upstream filing policy".
 
 ### Finding F — DynamoDB placeholders overwrite the caller's
 
@@ -120,8 +123,11 @@ caller and generator both bind `#n0`);
 `reproducer/finding_f_dynamodb_placeholder_collision.py` captures the
 serialized request from the real DynamoDB resource and also demonstrates the
 fix against the real objects; `harness/dynamodb_placeholder_merge_fixed.py`
-verifies the skip-on-collision fix (SUCCESSFUL, both phases). The issue draft
-is **not filed**.
+verifies the skip-on-collision fix (SUCCESSFUL, both phases).
+
+**Filed upstream as [boto/boto3#4831](https://github.com/boto/boto3/issues/4831)** (2026-08-20, open). It supersedes
+[#4032](https://github.com/boto/boto3/issues/4032), which reported the same
+defect from the values side in Feb 2024 and was closed with a workaround.
 
 ### Finding G — `create_tags` raises after the request is sent
 
@@ -234,7 +240,7 @@ verify.py                           # manifest + two-phase driver + --testgen
 Makefile                            # verify / phase1 / phase2 / verify-only / testgen / test
 ROADMAP.md                          # the verification plan: five tiers, ~27 rows,
                                     # modelling constraints, sequence, scope
-bug-reports/                        # upstream issue drafts (all unfiled)
+bug-reports/                        # upstream issue text (F filed as #4831)
 reproducer/                         # standalone CPython reproducers
 ```
 

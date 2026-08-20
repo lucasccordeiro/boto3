@@ -1,7 +1,8 @@
-# Finding F — ready to file at `boto/boto3`
+# Finding F — filed as boto/boto3#4831
 
-**Status: not filed.** Paste the sections below into the fields of
-<https://github.com/boto/boto3/issues/new?template=bug-report.yml>.
+**Status: FILED 2026-08-20 as [boto/boto3#4831](https://github.com/boto/boto3/issues/4831)** (open, labelled `bug`,
+`needs-triage`). The text below is what was submitted, kept here as the record;
+edit it only to keep it in step with the issue.
 
 Every `file:line` below was checked against `boto/boto3` `develop` at commit
 `ced31bb7` on 2026-08-20 — the merge at `transform.py:203-204` and the
@@ -14,8 +15,8 @@ a workaround** ("write the condition as a raw string"); the root cause was never
 identified. Lead with their reproduction — it uses ordinary placeholder names
 and shows real data corruption — so this does not get closed the same way.
 
-**Before filing:** replace *Environment details* with your own machine, and
-re-check that `develop` still contains the merge (it may have moved on).
+The reproduction was re-run against the filed text on boto3 1.34.46 and 1.43.76
+after submission; both print `{':v1': 'bar', ':v0': 'foo'}`.
 
 ---
 
