@@ -6,6 +6,8 @@
 #   make phase1          # functional contracts only
 #   make phase2          # --overflow-check only
 #   make verify-only T=all_not_none
+#   make testgen         # regenerate pytest witnesses from counterexamples
+#   make test            # run the pytest suite against the real boto3
 #
 # ESBMC binary location override:
 #   make verify ESBMC=/path/to/esbmc
@@ -13,7 +15,7 @@
 ESBMC ?= esbmc
 PYTHON ?= python3
 
-.PHONY: verify phase1 phase2 verify-only check-esbmc
+.PHONY: verify phase1 phase2 verify-only testgen test check-esbmc
 
 verify: check-esbmc
 	$(PYTHON) verify.py --phase all
@@ -27,6 +29,12 @@ phase2: check-esbmc
 verify-only: check-esbmc
 	@test -n "$(T)" || (echo "usage: make verify-only T=<target>" && exit 2)
 	$(PYTHON) verify.py --only $(T)
+
+testgen: check-esbmc
+	$(PYTHON) verify.py --testgen
+
+test:
+	$(PYTHON) -m pytest tests -q
 
 check-esbmc:
 	@command -v $(ESBMC) >/dev/null || { \
