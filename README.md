@@ -54,12 +54,16 @@ The off-by-one is invisible for every positive limit, which is why it survives
 the test suite.
 
 **Reachability.** `pages()` branches on `client.can_paginate` at
-`collection.py:147-164`, and the two branches behave differently:
+`collection.py:145-164`, and the two branches behave differently:
 
 | Collection | `.limit(0)` | `.limit(-n)` |
 |---|---|---|
-| Not paginatable — `s3.buckets`, `ec2.key_pairs`, `ec2.classic_addresses`, `iam.saml_providers`, `opsworks.stacks`, 31 in all | **1 resource** | **1 resource** |
-| Paginatable — `bucket.objects`, most others | 0, masked | **1 resource** while `n < page_len` |
+| Not paginatable — `ec2.key_pairs`, `ec2.placement_groups`, `ec2.classic_addresses`, `ec2.vpc_addresses`, `Instance.vpc_addresses`, `cloudwatch Metric.alarms`, `iam.saml_providers` (7 of 88 on boto3 1.43.76) | **1 resource** | **1 resource** |
+| Paginatable — `bucket.objects`, the other 81 | 0, masked | **1 resource** while `n < page_len` |
+
+That set drifts: `s3.buckets` was on the first row until botocore added a
+`ListBuckets` paginator, which silently moved it to the second. The tests assert
+the precondition rather than assume it.
 
 On the paginatable branch the limit also reaches botocore as
 `PaginationConfig={'MaxItems': limit}`, and `_truncate_response` keeps

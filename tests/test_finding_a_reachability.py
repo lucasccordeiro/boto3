@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Which real collections actually reach Finding A.
 
-`ResourceCollection.pages()` has two branches (collection.py:147-164):
+`ResourceCollection.pages()` has two branches (collection.py:145-164):
 
   * `client.can_paginate(op)` is True -- the limit is also handed to
     botocore as `PaginationConfig={'MaxItems': limit}`, and botocore
@@ -9,7 +9,11 @@
     **masked**.
   * otherwise -- a single un-truncated call at :164, and the loops at
     :168-184 / :76-87 are the only thing enforcing the limit. The
-    defect is **live**.
+    defect is **live**. On boto3 1.43.76 seven of the 88 bundled
+    collections take this branch: `ec2.key_pairs`,
+    `ec2.placement_groups`, `ec2.classic_addresses`,
+    `ec2.vpc_addresses`, `Instance.vpc_addresses`,
+    `cloudwatch Metric.alarms` and `iam.saml_providers`.
 
 Both are pinned here against real service resources, because the
 distinction is the whole reachability argument and a synthetic client
@@ -21,14 +25,14 @@ import pytest
 
 from aws_capture import capturing_resource
 
-LIST_BUCKETS = (
+DESCRIBE_KEY_PAIRS = (
     b'<?xml version="1.0" encoding="UTF-8"?>'
-    b'<ListAllMyBucketsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">'
-    b"<Owner><ID>oid</ID><DisplayName>me</DisplayName></Owner><Buckets>"
-    b"<Bucket><Name>alpha</Name><CreationDate>2020-01-01T00:00:00.000Z</CreationDate></Bucket>"
-    b"<Bucket><Name>beta</Name><CreationDate>2020-01-01T00:00:00.000Z</CreationDate></Bucket>"
-    b"<Bucket><Name>gamma</Name><CreationDate>2020-01-01T00:00:00.000Z</CreationDate></Bucket>"
-    b"</Buckets></ListAllMyBucketsResult>"
+    b'<DescribeKeyPairsResponse xmlns="http://ec2.amazonaws.com/doc/2016-11-15/">'
+    b"<requestId>r-1</requestId><keySet>"
+    b"<item><keyName>alpha</keyName><keyFingerprint>aa:aa</keyFingerprint></item>"
+    b"<item><keyName>beta</keyName><keyFingerprint>bb:bb</keyFingerprint></item>"
+    b"<item><keyName>gamma</keyName><keyFingerprint>cc:cc</keyFingerprint></item>"
+    b"</keySet></DescribeKeyPairsResponse>"
 )
 
 LIST_OBJECTS = (
@@ -46,37 +50,49 @@ LIST_OBJECTS = (
 )
 
 
-def test_list_buckets_is_not_paginatable():
-    """The precondition that puts s3.buckets on the defective branch."""
-    client = boto3.client(
+def test_describe_key_pairs_is_not_paginatable():
+    """The precondition that puts ec2.key_pairs on the defective branch.
+
+    Asserted rather than assumed, because it drifts: `s3.buckets` was on
+    this branch until botocore added a `ListBuckets` paginator, which
+    silently moved it to the masked one. If AWS adds a `DescribeKeyPairs`
+    paginator, this fails instead of the suite quietly proving nothing.
+    """
+    ec2 = boto3.client(
+        "ec2",
+        region_name="us-east-1",
+        aws_access_key_id="dummy",
+        aws_secret_access_key="dummy",
+    )
+    s3 = boto3.client(
         "s3",
         region_name="us-east-1",
         aws_access_key_id="dummy",
         aws_secret_access_key="dummy",
     )
-    assert client.can_paginate("list_buckets") is False
-    assert client.can_paginate("list_objects_v2") is True
+    assert ec2.can_paginate("describe_key_pairs") is False
+    assert s3.can_paginate("list_objects_v2") is True
 
 
 @pytest.mark.parametrize("limit", [0, -1, -5])
 def test_non_paginated_collection_returns_one_resource(limit):
-    """Live: s3.buckets.limit(0) hands back a bucket the caller excluded."""
+    """Live: ec2.key_pairs.limit(0) hands back a key the caller excluded."""
     sent = []
-    s3 = capturing_resource("s3", LIST_BUCKETS, sent)
+    ec2 = capturing_resource("ec2", DESCRIBE_KEY_PAIRS, sent)
 
-    names = [bucket.name for bucket in s3.buckets.limit(limit)]
+    names = [kp.name for kp in ec2.key_pairs.limit(limit)]
 
-    assert len(sent) == 1, "a real ListBuckets request was issued"
+    assert len(sent) == 1, "a real DescribeKeyPairs request was issued"
     assert names == ["alpha"], (
-        f"s3.buckets.limit({limit}) returned {names}; contract allows none"
+        f"ec2.key_pairs.limit({limit}) returned {names}; contract allows none"
     )
 
 
 def test_non_paginated_collection_honours_positive_limits():
     """Control: invisible for every positive limit."""
     sent = []
-    s3 = capturing_resource("s3", LIST_BUCKETS, sent)
-    assert [b.name for b in s3.buckets.limit(2)] == ["alpha", "beta"]
+    ec2 = capturing_resource("ec2", DESCRIBE_KEY_PAIRS, sent)
+    assert [kp.name for kp in ec2.key_pairs.limit(2)] == ["alpha", "beta"]
 
 
 PAGE_LEN = 3  # the canned ListObjectsV2 response above
@@ -86,9 +102,10 @@ PAGE_LEN = 3  # the canned ListObjectsV2 response above
 def test_paginated_collection_masked_when_botocore_empties_the_page(limit):
     """Masked: botocore keeps `page[:limit]`, which is empty here.
 
-    paginate.py:291-296 computes
-    `truncate_amount = total_items + num_current_response - max_items`,
-    so `_truncate_response` keeps `original[:max_items]`. At
+    botocore's `PageIterator.__iter__` computes
+    `truncate_amount = total_items + num_current_response - max_items`
+    (paginate.py:295-297 on develop), so `_truncate_response` (:429-459)
+    keeps `original[:max_items]`. At
     `limit == 0`, or `-limit >= page_len`, that slice is empty and
     boto3's loops never see an item.
     """
