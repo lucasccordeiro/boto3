@@ -109,8 +109,35 @@ TARGETS: list[Target] = [
         expected="SUCCESSFUL",
         safety_expected="SUCCESSFUL",
     ),
+    # --- Tier 4: state and data-integrity invariants ---------------
+    Target(
+        # Finding F witness: boto3's generated DynamoDB placeholders
+        # overwrite the caller's own. dynamodb/transform.py:203-204
+        # merges `generated_names` over the caller's
+        # ExpressionAttributeNames with `dict.update`, and the builder
+        # is reset to `#n0` / `:v0` at :172 on every request
+        # (conditions.py:313-322). A caller who binds `#n0` in a raw
+        # expression and also passes a ConditionExpression loses that
+        # binding silently. Phase 1 FAILED is the expected verdict --
+        # the counterexample IS the bug report.
+        name="dynamodb_placeholder_merge",
+        entry="dynamodb_placeholder_merge.py",
+        esbmc_args=("--unwind", "4"),
+        expected="FAILED",
+        safety_expected=None,
+    ),
+    Target(
+        # Positive control modelling the proposed fix (allocate the
+        # next *free* suffix instead of restarting at 0). Confirms the
+        # Finding F harness is non-vacuous: same domains, same merge
+        # postcondition, collision-free allocation, SUCCESSFUL.
+        name="dynamodb_placeholder_merge_fixed",
+        entry="dynamodb_placeholder_merge_fixed.py",
+        esbmc_args=("--unwind", "7"),
+        expected="SUCCESSFUL",
+        safety_expected="SUCCESSFUL",
+    ),
 ]
-
 
 
 def _verdict_from_output(out: str) -> str:
