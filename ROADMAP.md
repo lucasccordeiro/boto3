@@ -96,19 +96,26 @@ Unchanged from the prior PoCs; restated so this document stands alone.
 Measured against **ESBMC 8.4.0** on this repository's harnesses. These are
 verifier limits, not boto3 facts; they shape what a harness may look like.
 
-**C1 — lists must not cross a function boundary.** A list passed as an
-argument loses its elements' type tags in the callee. `param[i] == 5` there is
-modelled as an uncaught `TypeError`, and arithmetic on `param[i]` likewise, so
-the harness fails spuriously while the same code inlined into `main` verifies.
-Minimal reproducer and the exact four cases (two failing, two passing):
+**C1 — annotate every list parameter with its element type.** A parameter
+annotated with a bare `list` loses its elements' type in the callee.
+Arithmetic on `param[i]` is then modelled as an uncaught `TypeError`, and
+`param[i] == 5` **silently evaluates false** with no exception at all — the
+more dangerous of the two, because it yields a plausible counterexample rather
+than an error, so a harness can look like it found a boto3 bug when it has only
+found this. Annotating the parameter `list[int]` fixes both; the property count
+rises (36 → 47 on the minimal case), which is the element type enabling the
+extra checks. Filed upstream as
+[esbmc/esbmc#7187](https://github.com/esbmc/esbmc/issues/7187); five-case
+reproducer at
 [`reproducer/esbmc_list_parameter_type_tag_loss.py`](./reproducer/esbmc_list_parameter_type_tag_loss.py).
-**Workaround:** create and consume each list inside one function — inline the
-loop into `main` (`harness/all_not_none.py`) or keep the list local to a
-helper (`harness/collection_limit_nonpositive.py`, where `page_sizes` never
-leaves `collection_iter_count`). **To do:** file upstream against
-`esbmc/esbmc`; the prior PoCs filed four such frontend issues
-(esbmc#4756, #4909, #4926, #5022) and three were fixed, so this is worth the
-report.
+
+**Workaround:** write `xs: list[int]`, not `xs: list`. Verified to hold for
+nondet-filled lists, for in-place mutation of a caller-owned list, and for a
+list returned from a callee. This supersedes the original workaround ("create
+and consume each list inside one function"), which over-reacted to the
+bare-`list` symptom and forced several harnesses to inline logic that upstream
+has as a function — `harness/all_not_none.py` now models `all_not_none(xs, n)`
+as the function it actually is.
 
 **C2 — no symbolic `None`.** Every boto3 target in Tiers 2–4 turns on the
 difference between "absent" and "present but falsy", which is exactly what
@@ -166,7 +173,7 @@ coverage.
 | Tier 4 — data integrity | `dynamodb_placeholder_merge` (witness), `dynamodb_placeholder_merge_fixed` (positive control) | Witness Phase 1 FAILED with the caller and the generator both binding `#n0`. Control SUCCESSFUL both phases. **Finding F confirmed empirically** — the captured request writes an attribute the caller never named. |
 | Tier 3 — bare exceptions | `create_tags_missing_value` (witness), `create_tags_missing_value_fixed` (positive control) | Witness Phase 1 FAILED with a tag carrying `Key` and no `Value`. Control SUCCESSFUL both phases. **Finding G confirmed** — the request is issued, then boto3 raises `KeyError`. |
 | Test generation | `tests/` + `tests/generated/` | `make testgen` runs each live-bug witness under `--generate-pytest-testcase`; the emitted counterexample drives the real boto3 API in `tests/test_finding_*.py`. Each finding has a bug test and a fix test on the same inputs, and every bug test was confirmed to fail when the fix is applied to real boto3. |
-| Frontend | — | ESBMC-Python constraint C1 found and reduced while writing `all_not_none`; reproducer committed. |
+| Frontend | — | Two ESBMC-Python defects found, reduced and filed: [#7187](https://github.com/esbmc/esbmc/issues/7187) (bare `list` parameter loses the element type) and [#7188](https://github.com/esbmc/esbmc/issues/7188) (generated pytest cannot run). |
 
 ---
 
@@ -516,7 +523,9 @@ different subsystems.
 
 ## Cross-cutting workstreams
 
-- **ESBMC-Python frontend issues.** Constraint C1 is filed-worthy today. Keep
+- **ESBMC-Python frontend issues.** C1 is filed as
+  [esbmc#7187](https://github.com/esbmc/esbmc/issues/7187) and C6 as
+  [esbmc#7188](https://github.com/esbmc/esbmc/issues/7188). Keep
   reducing every frontend divergence to a four-case minimal reproducer under
   `reproducer/` before filing, as with the list-parameter case; the prior PoCs
   had three of four such reports fixed upstream, and each fix removed a

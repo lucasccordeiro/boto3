@@ -29,7 +29,9 @@
 # exception for an operation that was issued, and a retry re-tags.
 #
 # Modelling: dict membership is a 0/1 flag per key (constraint C3), and
-# the escaping exception is a monotone `raised` flag. The property is
+# the escaping exception is a monotone `raised` flag. The flag lists are
+# annotated `list[int]`; a bare `list` would lose the element type in
+# the callee (esbmc/esbmc#7187, constraint C1). The property is
 # the ordering invariant -- not "the input is well-formed", which is
 # precisely what boto3 never checks.
 #
@@ -39,6 +41,24 @@
 from stubs import nondet_int, __ESBMC_assume
 
 N_TAGS = 3
+
+
+def build_tag_resources(
+    has_key: list[int], has_value: list[int], n_tags: int, n_resources: int
+) -> int:
+    """createtags.py:34-39. Returns 1 if the loop raises, 0 otherwise."""
+    raised = 0
+    r = 0
+    while r < n_resources:
+        t = 0
+        while t < n_tags:
+            if has_key[t] == 0:
+                raised = 1                  # :38 tag['Key']
+            if has_value[t] == 0:
+                raised = 1                  # :38 tag['Value']
+            t = t + 1
+        r = r + 1
+    return raised
 
 
 def main() -> None:
@@ -64,18 +84,7 @@ def main() -> None:
     # Validation has passed and the CreateTags request has been issued.
     service_called = 1
 
-    # --- :34-39 building the Tag resources --------------------------
-    raised = 0
-    r = 0
-    while r < n_resources:
-        t = 0
-        while t < N_TAGS:
-            if has_key[t] == 0:
-                raised = 1                  # :38 tag['Key']
-            if has_value[t] == 0:
-                raised = 1                  # :38 tag['Value']
-            t = t + 1
-        r = r + 1
+    raised = build_tag_resources(has_key, has_value, N_TAGS, n_resources)
 
     # Postcondition: no exception escapes `create_tags` once the
     # request at :27 has been issued. Equivalently: whatever validation

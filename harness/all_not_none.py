@@ -27,11 +27,11 @@
 #      the absent value. `element is None` becomes `element == NONE`.
 #      The legal domain deliberately includes 0, the falsy-but-valid
 #      value the docstring guarantees.
-#   2. The predicate is inlined into `main` rather than written as
-#      `all_not_none(xs, n)`: under ESBMC 8.4.0 a list passed as a
-#      function argument loses its elements' type tags in the callee,
-#      so `xs[i] == NONE` there is modelled as an uncaught TypeError
-#      and the harness fails spuriously. See
+#   2. The predicate is a real function taking `xs: list[int]`, which
+#      mirrors upstream. The element-type annotation is load-bearing:
+#      with a bare `list` the callee loses the elements' type and
+#      `xs[i] == NONE` either raises a spurious TypeError or silently
+#      evaluates false (esbmc/esbmc#7187, constraint C1). See
 #      ../reproducer/esbmc_list_parameter_type_tag_loss.py.
 #
 # Phase 1: the biconditional contract -- the result is True exactly
@@ -41,6 +41,16 @@
 from stubs import nondet_int, __ESBMC_assume, NONE
 
 N = 4
+
+
+def all_not_none(xs: list[int], n: int) -> bool:
+    """response.py:26-29, verbatim in structure."""
+    i = 0
+    while i < n:
+        if xs[i] == NONE:
+            return False
+        i = i + 1
+    return True
 
 
 def main() -> None:
@@ -56,14 +66,7 @@ def main() -> None:
         xs[i] = v
         i = i + 1
 
-    # --- all_not_none, response.py:26-29 ---------------------------
-    result = True
-    j = 0
-    while j < N:
-        if xs[j] == NONE:
-            result = False
-            break
-        j = j + 1
+    result = all_not_none(xs, N)
 
     # Independent recomputation of the reference property: a full scan
     # with no early exit, so the two disagree if the loop above stops

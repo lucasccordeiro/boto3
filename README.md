@@ -154,15 +154,24 @@ draft: whether EC2 stores a tag submitted without a `Value` (empty tag values
 are legal, so the expectation is yes) — confirm on a live account before
 filing.
 
-### ESBMC-Python frontend defect, found and reduced
+### ESBMC-Python frontend defects, found and filed
 
-A list passed as a
-function argument loses its elements' type tags in the callee, so
-`param[i] == 5` there is modelled as an uncaught `TypeError` and the harness
-fails spuriously. Four-case minimal reproducer in
-[`reproducer/esbmc_list_parameter_type_tag_loss.py`](./reproducer/esbmc_list_parameter_type_tag_loss.py);
-the workaround (keep every list inside the function that creates it) is
-constraint **C1** in ROADMAP.md.
+Two, both filed upstream.
+
+A parameter annotated with a bare `list` loses its elements' type in the callee:
+arithmetic on `param[i]` raises a spurious `TypeError`, and `param[i] == 5`
+silently evaluates false with no exception at all. Annotating `list[int]` fixes
+both — [esbmc#7187](https://github.com/esbmc/esbmc/issues/7187), five-case
+reproducer in
+[`reproducer/esbmc_list_parameter_type_tag_loss.py`](./reproducer/esbmc_list_parameter_type_tag_loss.py).
+
+`--generate-pytest-testcase` emits a file that cannot run: it opens with
+`from <module> import *`, which re-executes the program under CPython where the
+nondet intrinsics do not exist, and calls the entry function with the nondet
+values as positional arguments regardless of its real signature —
+[esbmc#7188](https://github.com/esbmc/esbmc/issues/7188).
+
+These are constraints **C1** and **C6** in ROADMAP.md.
 
 ## Quickstart
 

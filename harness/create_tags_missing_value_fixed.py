@@ -27,6 +27,23 @@ from stubs import nondet_int, __ESBMC_assume
 N_TAGS = 3
 
 
+def build_tag_resources_with_get(n_tags: int, n_resources: int) -> int:
+    """createtags.py:34-39 with `.get` at :38.
+
+    Absence is a value, not a fault, so every (resource, tag) pair
+    yields a Tag resource and nothing can raise.
+    """
+    produced = 0
+    r = 0
+    while r < n_resources:
+        t = 0
+        while t < n_tags:
+            produced = produced + 1
+            t = t + 1
+        r = r + 1
+    return produced
+
+
 def main() -> None:
     has_key = [0, 0, 0]
     has_value = [0, 0, 0]
@@ -47,15 +64,7 @@ def main() -> None:
     service_called = 1
 
     raised = 0
-    produced = 0
-    r = 0
-    while r < n_resources:
-        t = 0
-        while t < N_TAGS:
-            # `.get` on both keys: absence is a value, not a fault.
-            produced = produced + 1
-            t = t + 1
-        r = r + 1
+    produced = build_tag_resources_with_get(N_TAGS, n_resources)
 
     assert service_called == 0 or raised == 0
 

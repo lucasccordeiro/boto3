@@ -35,9 +35,10 @@
 # generated names always occupy the *prefix* 0..gen_count-1, which is
 # exactly what `reset()` guarantees.
 #
-# Everything is inlined into `main` -- lists lose their elements' type
-# tags when passed as function arguments under ESBMC 8.4.0 (constraint
-# C1, ../reproducer/esbmc_list_parameter_type_tag_loss.py).
+# List parameters carry `list[int]` annotations throughout: with a bare
+# `list` the callee loses the elements' type and the comparisons below
+# either raise a spurious TypeError or silently evaluate false
+# (esbmc/esbmc#7187, constraint C1).
 #
 # Phase 1 expected: FAILED (the counterexample IS the bug report).
 # Phase 2: skipped.
@@ -45,6 +46,19 @@
 from stubs import nondet_int, __ESBMC_assume, NONE
 
 N = 3
+
+
+def dict_update(dest: list[int], src: list[int], n: int) -> None:
+    """transform.py:204 -- params['ExpressionAttributeNames'].update(...).
+
+    `dict.update` overwrites on key collision, so a slot the caller
+    bound is replaced by the generated binding for the same key.
+    """
+    m = 0
+    while m < n:
+        if src[m] != NONE:
+            dest[m] = src[m]
+        m = m + 1
 
 
 def main() -> None:
@@ -79,18 +93,14 @@ def main() -> None:
         generated[j] = w
         j = j + 1
 
-    # --- the merge, transform.py:203-204 ---------------------------
-    #     params['ExpressionAttributeNames'].update(generated_names)
+    # `params` already holds the caller's mapping when the merge runs.
     merged = [NONE, NONE, NONE]
     k = 0
     while k < N:
         merged[k] = caller[k]
         k = k + 1
-    m = 0
-    while m < N:
-        if generated[m] != NONE:
-            merged[m] = generated[m]        # :204 dict.update overwrites
-        m = m + 1
+
+    dict_update(merged, generated, N)
 
     # Postcondition: merging boto3's generated placeholders into the
     # caller's mapping must not silently drop a caller binding. The
