@@ -21,6 +21,16 @@ from stubs import nondet_int, __ESBMC_assume, NONE
 N = 4
 
 
+def all_not_none_truthy(xs: list[int], n: int) -> bool:
+    """`if not element` in place of `if element is None`."""
+    i = 0
+    while i < n:
+        if xs[i] == 0 or xs[i] == NONE:
+            return False
+        i = i + 1
+    return True
+
+
 def main() -> None:
     xs = [0, 0, 0, 0]
 
@@ -31,14 +41,7 @@ def main() -> None:
         xs[i] = v
         i = i + 1
 
-    # --- `if not element` in place of `if element is None` ---------
-    result = True
-    j = 0
-    while j < N:
-        if xs[j] == 0 or xs[j] == NONE:
-            result = False
-            break
-        j = j + 1
+    result = all_not_none_truthy(xs, N)
 
     any_none = False
     k = 0
