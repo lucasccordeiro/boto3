@@ -23,8 +23,14 @@ class _CannedBody:
         return iter([self._payload])
 
 
-def capturing_resource(service: str, payload: bytes, sent: list):
-    """A real service resource whose requests are captured, not sent."""
+def capturing_resource(service: str, payload: bytes, sent: list, config=None):
+    """A real service resource whose requests are captured, not sent.
+
+    `sent` receives each serialized request body; a `sent` whose
+    `append` raises is how a test cuts short a run that would not
+    otherwise stop. `config` reaches botocore verbatim, which is how a
+    test reaches behaviour that parameter validation would mask.
+    """
 
     def before_send(request, **kwargs):
         body = request.body
@@ -36,6 +42,7 @@ def capturing_resource(service: str, payload: bytes, sent: list):
         region_name="us-east-1",
         aws_access_key_id="dummy",
         aws_secret_access_key="dummy",
+        config=config,
     )
     resource.meta.client.meta.events.register(f"before-send.{service}", before_send)
     return resource
