@@ -14,15 +14,15 @@ PoCs — same two-phase driver, same buggy-control discipline, same layout.
 five-tier target list of ~27 rows with per-row source citations, properties,
 buggy mutations, expected verdicts, and a recommended sequence.
 
-**8 verification targets** are implemented as the seed that proves the
+**11 verification targets** are implemented as the seed that proves the
 toolchain and the finding pipeline end to end. `make verify` (two phases per
 target) completes in ~2 min with 0 failures.
 
-**Three live findings, all confirmed empirically** against the real boto3 code,
+**Four live findings, all confirmed empirically** against the real boto3 code,
 each with an executable pytest reproduction generated from ESBMC's
-counterexample (see [below](#from-counterexample-to-executable-test)). All three
+counterexample (see [below](#from-counterexample-to-executable-test)).
 Finding F is filed upstream as
-**[boto/boto3#4831](https://github.com/boto/boto3/issues/4831)**; the other two drafts are written and unfiled.
+**[boto/boto3#4831](https://github.com/boto/boto3/issues/4831)**; the other three drafts are written and unfiled.
 
 ### Finding A — `ResourceCollection.limit(0)` returns one resource
 
@@ -83,6 +83,47 @@ verifies the proposed fix (SUCCESSFUL, both phases). The issue draft in
 [boto/boto3#4670](https://github.com/boto/boto3/issues/4670), which reported this
 in Dec 2025 and was closed as irreproducible after the reporter tested a
 paginatable collection. See ROADMAP.md "Upstream filing policy".
+
+### Finding D — `BatchWriter` accepts any `flush_amount`
+
+`BatchWriter.__init__` stores `flush_amount` with no range check
+(`dynamodb/table.py:99`), and `_flush` builds the `BatchWriteItem` request by
+slicing the buffer with it (`:142`). DynamoDB bounds that list —
+`RequestItems`' value shape is `{'min': 1, 'max': 25}` — and boto3 keeps
+`items_to_send` inside it for no value of `flush_amount` a caller might pass:
+
+| `flush_amount` | What the caller sees |
+|---|---|
+| `<= 0`, default config | `ParamValidationError: Invalid length for parameter RequestItems.<table>, value: 0, valid min length: 1` on the **first** `put_item`. The word `flush_amount` does not appear. |
+| `<= 0`, `Config(parameter_validation=False)` | `__exit__` never returns. At `flush_amount=0`: 8628 `BatchWriteItem` requests in five seconds from a three-item `with` block, every one empty, still going. |
+| `> 25` | boto3 builds and sends an over-size batch. botocore's `range_check` reads `'min'` and never `'max'`, so nothing local stops it. Measured: `flush_amount=30` produces one 30-item request. |
+
+The non-termination is `while self._items_buffer: self._flush()` (`:166-167`)
+with no other exit: for `flush_amount <= 0`, `_flush` selects nothing
+(`buffer[:0]`, or `buffer[:-k]` once the buffer is down to `k` entries) and
+puts the whole buffer back, so the loop re-enters with what it started with.
+
+PR [#562](https://github.com/boto/boto3/pull/562) (merged 2016) added the
+`[: flush_amount]` slice for exactly this invariant — "Ensure batch writer
+never sends more than flush_amount" — so it is one upstream already accepts.
+What is missing is a bound on `flush_amount` itself.
+
+**Reachability.** `TableResource.batch_writer` (`:31-60`) does not forward
+`flush_amount`, so this needs the `BatchWriter` constructor — which the class
+docstring documents as a supported entry point (`:80-83`). Exposing
+`flush_amount` on `batch_writer()` has been asked for twice
+([#2188](https://github.com/boto/boto3/issues/2188), PR
+[#2196](https://github.com/boto/boto3/pull/2196), closed unmerged).
+
+`harness/batch_writer_flush_amount.py` is the ESBMC witness for the batch-size
+contract (counterexample `flush_amount = 0`, `sent = 0`) and
+`harness/batch_writer_drain_nonterminating.py` for the drain loop's missing
+variant (counterexample `flush_amount = -2`, buffer stuck at 2);
+`reproducer/finding_d_batch_writer_flush_amount.py` reproduces all three
+failures against the real `BatchWriter`;
+`harness/batch_writer_flush_amount_checked.py` verifies the range-check fix
+(SUCCESSFUL, both phases). The issue draft in [`bug-reports/`](./bug-reports/)
+is **not filed**.
 
 ### Finding F — DynamoDB placeholders overwrite the caller's
 
@@ -188,7 +229,7 @@ make verify ESBMC=/path/to/esbmc
 ```
 
 Requires ESBMC ≥ 8.4.0 built with the Python frontend, and `pytest` for
-`make test`.
+`make test`. Verdicts below hold on 8.4.0 and 8.5.0.
 
 ## From counterexample to executable test
 
@@ -217,13 +258,15 @@ Values ESBMC picked, and what each drives:
 | Witness | Counterexample | Drives |
 |---|---|---|
 | `collection_limit_nonpositive` | `limit=0, page_len=2` | `.limit(0)` on a real `ResourceCollection` |
+| `batch_writer_flush_amount` | `flush_amount=0, buffered=12` | `BatchWriter` slicing a real buffer to build `BatchWriteItem` |
+| `batch_writer_drain_nonterminating` | `flush_amount=-2, buffered=3` | `__exit__` on a real `BatchWriter`, capped by the test |
 | `create_tags_missing_value` | tags `(Key,Value)` = present/present, present/present, present/**absent**; `n_resources=2` | `ec2.create_tags` with a `Value`-less tag |
 | `dynamodb_placeholder_merge` | caller binds `#n0`; `gen_count=3` | `update_item` mixing a raw expression with `ConditionExpression` |
 
 Each finding gets a bug test and a fix test **on the same witness inputs**, so
-the pair is a differential check rather than an assertion about one run. All
-three bug tests were confirmed to fail when the corresponding fix is applied to
-the real boto3 code.
+the pair is a differential check rather than an assertion about one run. Every
+bug test was confirmed to fail when the corresponding fix is applied to the
+real boto3 code.
 
 ## Layout
 
@@ -234,6 +277,9 @@ harness/
   all_not_none_buggy.py             #   `not x` for `x is None`        (FAILED)
   collection_limit_nonpositive.py   # Finding A witness                (FAILED, LIVE BUG)
   collection_limit_honored.py       #   positive control: the fix      (SUCCESSFUL)
+  batch_writer_flush_amount.py      # Finding D witness                (FAILED, LIVE BUG)
+  batch_writer_drain_nonterminating.py #  Finding D, non-termination   (FAILED, LIVE BUG)
+  batch_writer_flush_amount_checked.py #  positive control: the fix    (SUCCESSFUL)
   dynamodb_placeholder_merge.py     # Finding F witness                (FAILED, LIVE BUG)
   dynamodb_placeholder_merge_fixed.py #  positive control: the fix     (SUCCESSFUL)
   create_tags_missing_value.py      # Finding G witness                (FAILED, LIVE BUG)
@@ -243,6 +289,7 @@ tests/
   aws_capture.py                    # real boto3 client, request captured not sent
   generated/                        # ESBMC --generate-pytest-testcase output
   test_finding_a_collection_limit.py
+  test_finding_d_batch_writer.py
   test_finding_f_dynamodb_placeholders.py
   test_finding_g_create_tags.py
 verify.py                           # manifest + two-phase driver + --testgen
@@ -275,8 +322,11 @@ vacuously. This guard exists because that failure mode is otherwise silent.
 | `all_not_none_buggy` | `all_not_none_buggy.py` | 571 ✗ | — |
 | `collection_limit_nonpositive` | `collection_limit_nonpositive.py` | **335 ✗ (Finding A)** | — |
 | `collection_limit_honored` | `collection_limit_honored.py` | 337 ✓ | 404 ✓ |
-| `create_tags_missing_value` | `create_tags_missing_value.py` | **643 ✗ (Finding G)** | — |
-| `create_tags_missing_value_fixed` | `create_tags_missing_value_fixed.py` | 356 ✓ | 374 ✓ |
+| `batch_writer_flush_amount` | `batch_writer_flush_amount.py` | **2 ✗ (Finding D)** | — |
+| `batch_writer_drain_nonterminating` | `batch_writer_drain_nonterminating.py` | **6 ✗ (Finding D)** | — |
+| `batch_writer_flush_amount_checked` | `batch_writer_flush_amount_checked.py` | 8 ✓ | 35 ✓ |
+| `create_tags_missing_value` | `create_tags_missing_value.py` | **932 ✗ (Finding G)** | — |
+| `create_tags_missing_value_fixed` | `create_tags_missing_value_fixed.py` | 357 ✓ | 389 ✓ |
 | `dynamodb_placeholder_merge` | `dynamodb_placeholder_merge.py` | **1232 ✗ (Finding F)** | — |
 | `dynamodb_placeholder_merge_fixed` | `dynamodb_placeholder_merge_fixed.py` | 2152 ✓ | 2201 ✓ |
 
@@ -284,7 +334,7 @@ vacuously. This guard exists because that failure mode is otherwise silent.
 
 ## Provenance
 
-- **ESBMC**: https://github.com/esbmc/esbmc — version 8.4.0, default Bitwuzla
-  solver.
+- **ESBMC**: https://github.com/esbmc/esbmc — versions 8.4.0 and 8.5.0,
+  default Bitwuzla solver.
 - **boto3**: https://github.com/boto/boto3 — pinned at commit `1b554d2`
   (version 1.43.75, 2026-08-20).

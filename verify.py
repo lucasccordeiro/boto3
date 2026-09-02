@@ -87,6 +87,47 @@ TARGETS: list[Target] = [
         expected="SUCCESSFUL",
         safety_expected="SUCCESSFUL",
     ),
+    Target(
+        # Finding D witness: BatchWriter(flush_amount) outside [1, 25].
+        # dynamodb/table.py:99 stores the value with no range check;
+        # :142 slices the buffer by it to build the BatchWriteItem
+        # request. DynamoDB bounds that list at {'min': 1, 'max': 25},
+        # so flush_amount <= 0 builds an empty batch and
+        # flush_amount > 25 an over-size one. Phase 1 FAILED is the
+        # expected verdict -- the counterexample IS the bug report.
+        # No --unwind: the model is the single `_flush` step, loop-free.
+        name="batch_writer_flush_amount",
+        entry="batch_writer_flush_amount.py",
+        expected="FAILED",
+        safety_expected=None,
+        testcase=True,
+    ),
+    Target(
+        # Finding D witness, second consequence: __exit__'s drain loop
+        # (table.py:163-167) has no variant for flush_amount <= 0 --
+        # _flush selects nothing and puts everything back, so the
+        # context manager never returns. The property is the loop
+        # variant, so the verdict does not depend on the unwind bound;
+        # per constraint C5 the unwinding assertions stay on anyway.
+        name="batch_writer_drain_nonterminating",
+        entry="batch_writer_drain_nonterminating.py",
+        esbmc_args=("--unwind", "5"),
+        expected="FAILED",
+        safety_expected=None,
+        testcase=True,
+    ),
+    Target(
+        # Positive control modelling the proposed fix (reject a
+        # flush_amount outside the BatchWriteItem bounds in
+        # BatchWriter.__init__). One control for both witnesses: the
+        # guard restores the request-size contract and the drain loop's
+        # variant at once.
+        name="batch_writer_flush_amount_checked",
+        entry="batch_writer_flush_amount_checked.py",
+        esbmc_args=("--unwind", "5"),
+        expected="SUCCESSFUL",
+        safety_expected="SUCCESSFUL",
+    ),
     # --- Tier 3: bare exceptions at the API boundary ---------------
     Target(
         # Finding G witness: EC2 create_tags with a tag omitting Value.

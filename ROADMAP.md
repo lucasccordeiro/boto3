@@ -79,11 +79,13 @@ Unchanged from the prior PoCs; restated so this document stands alone.
    `tests/` parses the values out and applies them to the real boto3 API, so
    the executable reproduction cannot drift from what the verifier actually
    found. The generated files are parsed, never imported — a harness is not
-   importable under CPython by design (see C6).
+   importable under CPython by design (see C6). A test driven by a
+   counterexample from a non-terminating run must cap the run itself; see
+   `tests/test_finding_d_batch_writer.py`.
 5. **No finding is filed on an ESBMC verdict alone.** A counterexample is a
    hypothesis about the source; it becomes a finding only after a standalone
    CPython reproducer drives the *real* boto3 code and shows the behaviour.
-   All three confirmed findings — A, F and G — have both.
+   All four confirmed findings — A, D, F and G — have both.
 6. **Pin everything.** Harness headers quote the upstream source verbatim with
    `file:line` against commit `1b554d2`. When a reproducer runs against a
    different installed release, the header records an AST comparison of the
@@ -93,7 +95,8 @@ Unchanged from the prior PoCs; restated so this document stands alone.
 
 ## Modelling constraints (ESBMC-Python)
 
-Measured against **ESBMC 8.4.0** on this repository's harnesses. These are
+Measured against **ESBMC 8.4.0** and re-checked on **8.5.0** against this
+repository's harnesses. These are
 verifier limits, not boto3 facts; they shape what a harness may look like.
 
 **C1 — annotate every list parameter with its element type.** A parameter
@@ -150,18 +153,26 @@ pass. **Workaround:** parse the `@pytest.mark.parametrize` list
 do:** worth raising upstream — a `--pytest-values-only` emitting just the
 witness dict would remove the parsing step.
 
-**C5 — `--unwind`, never `--no-unwinding-assertions`.** Two planned targets
-(Tier 2 row 4, Tier 3 row 3) prove **non-termination** by showing a loop
-cannot fit inside its bound. That argument is only sound with unwinding
+**C5 — `--unwind`, never `--no-unwinding-assertions`.** Non-termination
+arguments (Tier 2 row D, Tier 3 row 3) are only sound with unwinding
 assertions on; disabling them produces false SUCCESSFUL on truncated loops.
 If a full unwind is infeasible, switch to `--k-induction` and require
 convergence — do not lower the bound.
+
+**Prefer the loop variant to the unwinding bound where the loop has one.**
+Finding D's drain harness asserts that `_flush` strictly shrinks the buffer
+rather than that the loop fits in `--unwind N`. A variant violation says the
+body made no progress *at all*, which is a non-termination argument
+independent of the bound, and it names the defect in the report
+(`buffered < before`) instead of naming ESBMC's bookkeeping. Keep unwinding
+assertions on regardless: they are what stops a truncated loop from passing
+the variant vacuously.
 
 ---
 
 ## Already covered
 
-Eight targets, `make verify` green in ~2 min, plus 24 pytest reproductions
+Eleven targets, `make verify` green in ~2 min, plus 33 pytest reproductions
 (`make test`) driven by ESBMC's own counterexamples. This is the seed that proves the
 toolchain, the driver, and the finding pipeline end to end — not a claim of
 coverage.
@@ -170,6 +181,7 @@ coverage.
 |---|---|---|
 | Tier 1 — pure predicates | `all_not_none`, `all_not_none_buggy` | Phase 1 + 2 SUCCESSFUL / FAILED as expected. Establishes the `is None` vs `not x` contract that Tiers 2–4 violate elsewhere. |
 | Tier 2 — silent acceptance | `collection_limit_nonpositive` (witness), `collection_limit_honored` (positive control) | Witness Phase 1 FAILED at `limit = 0`, `delivered = 1`. Control SUCCESSFUL both phases. **Finding A confirmed empirically** against the real `ResourceCollection`. |
+| Tier 2 — silent acceptance | `batch_writer_flush_amount` (witness), `batch_writer_drain_nonterminating` (witness), `batch_writer_flush_amount_checked` (positive control) | Both witnesses Phase 1 FAILED — the first on the BatchWriteItem size contract at `flush_amount = 0`, the second on the drain loop's variant at `flush_amount = -2`. Control SUCCESSFUL both phases. **Finding D confirmed empirically** — the captured requests carry 0 items, then 30. |
 | Tier 4 — data integrity | `dynamodb_placeholder_merge` (witness), `dynamodb_placeholder_merge_fixed` (positive control) | Witness Phase 1 FAILED with the caller and the generator both binding `#n0`. Control SUCCESSFUL both phases. **Finding F confirmed empirically** — the captured request writes an attribute the caller never named. |
 | Tier 3 — bare exceptions | `create_tags_missing_value` (witness), `create_tags_missing_value_fixed` (positive control) | Witness Phase 1 FAILED with a tag carrying `Key` and no `Value`. Control SUCCESSFUL both phases. **Finding G confirmed** — the request is issued, then boto3 raises `KeyError`. |
 | Test generation | `tests/` + `tests/generated/` | `make testgen` runs each live-bug witness under `--generate-pytest-testcase`; the emitted counterexample drives the real boto3 API in `tests/test_finding_*.py`. Each finding has a bug test and a fix test on the same inputs, and every bug test was confirmed to fail when the fix is applied to real boto3. |
@@ -260,24 +272,71 @@ that the resolved client is a documented function of the request; the `other`
 case violates it. Positive control: the `crt.py:185-191` loop, which is
 exhaustive over `DEFAULTS` and does reject.
 
-### Finding D (candidate) — `BatchWriter(flush_amount <= 0)` does not terminate
+### Finding D — `BatchWriter(flush_amount)` unvalidated ✅ CONFIRMED
 
-`dynamodb/table.py:137-167`. With `flush_amount = 0`, `_flush_if_needed`'s
-`len(buffer) >= 0` is always true, and `_flush` slices `buffer[:0]` /
-`buffer[0:]` — it sends an empty batch and **drains nothing**. With a negative
-flush amount, `buffer[:-k]` / `buffer[-k:]` retains the tail forever. Either
-way `__exit__`'s `while self._items_buffer: self._flush()` (`:165-167`) cannot
-make progress.
+`table.py:99` stores `flush_amount` verbatim. DynamoDB's `BatchWriteItem`
+bounds the per-table list at `{'min': 1, 'max': 25}`, and `_flush` builds that
+list by slicing the buffer with the stored value (`:142`), so **both ends of
+the range are open**. The scoping the row originally carried — "does not
+terminate" — turned out to be one of three observable failures, and not the
+one a caller meets first.
 
-`flush_amount` is not exposed through `TableResource.batch_writer`
-(`table.py:31-60`), so this is programmatic-only — reachable through the
-constructor the class docstring explicitly documents as a supported entry point
-(`table.py:80-83`). vLLM Finding #8 was programmatic-only in exactly this sense
-and was fixed upstream anyway.
+| `flush_amount` | What the caller sees |
+|---|---|
+| `<= 0`, default config | `ParamValidationError: Invalid length for parameter RequestItems.<table>, value: 0, valid min length: 1` on the **first** `put_item`. The message names a parameter the caller never wrote; the word `flush_amount` does not appear. |
+| `<= 0`, `Config(parameter_validation=False)` | `__exit__` never returns. Measured at `flush_amount=0`: 8628 `BatchWriteItem` requests in five seconds from a three-item `with` block, every one empty, still going. At `-1` the first two carry an item and the rest are empty — the same stall one step later. |
+| `> 25` | boto3 builds an over-size batch and issues it. botocore's `range_check` (`validate.py`) reads `'min'` and **never** `'max'`, so nothing local stops it. Measured: `flush_amount=30` produces one 30-item request. The service's response to it is not exercised — the claim is that boto3 sends a request past the documented limit. |
 
-Harness: the vLLM `hash_block_size_negative_propagation` shape — bound the
-loop with `--unwind` and let the unwinding assertion witness non-termination.
-See constraint **C5**: unwinding assertions stay on.
+The drain loop is the second row's mechanism: `while self._items_buffer:
+self._flush()` (`:166-167`) has no other exit, and for `flush_amount <= 0`
+`_flush` selects nothing (`buffer[:0]`, or `buffer[:-k]` once the buffer is
+down to `k` entries) and puts the whole buffer back, so the loop re-enters with
+what it started with.
+
+**Prior art.** PR [#562](https://github.com/boto/boto3/pull/562) (merged 2016,
+"Ensure batch writer never sends more than flush_amount") added the
+`[: flush_amount]` slice at `:142` precisely to keep unprocessed items from
+pushing a batch past the API maximum — so the invariant is one upstream has
+already accepted. What is missing is a bound on `flush_amount` itself. No
+issue reports that.
+
+**Reachability.** `TableResource.batch_writer` (`table.py:31-60`) does not
+forward `flush_amount`, so this is programmatic-only — through the constructor
+the class docstring documents as a supported entry point (`:80-83`, "if you're
+going to instantiate this class directly"). Exposing `flush_amount` on
+`batch_writer()` has been asked for twice
+([#2188](https://github.com/boto/boto3/issues/2188), PR
+[#2196](https://github.com/boto/boto3/pull/2196), closed unmerged), so a caller
+who wants a different batch size reaches for the constructor by design. vLLM
+Finding #8 was programmatic-only in exactly this sense and was fixed upstream
+anyway.
+
+- Witness: `harness/batch_writer_flush_amount.py` — FAILED at
+  `flush_amount = 0`. Both bounds of `1 <= len(items_to_send) <= 25` are
+  independently violable; ESBMC reports one counterexample per run, so the
+  upper bound is checked by hand under `--multi-property` and pinned
+  empirically by `test_flush_amount_above_the_maximum_builds_an_oversize_batch`
+  rather than by `make verify`.
+- Witness: `harness/batch_writer_drain_nonterminating.py` — FAILED on the
+  drain loop's **variant**, not on the unwinding bound. Per **C5** unwinding
+  assertions stay on, but a variant violation says `_flush` made no progress
+  at all, which is a non-termination argument that does not depend on how
+  large the bound is. Prefer this shape to the vLLM
+  `hash_block_size_negative_propagation` one where the loop admits a variant.
+- Control: `harness/batch_writer_flush_amount_checked.py` — SUCCESSFUL both
+  phases, one control for both witnesses because both follow from the one
+  missing check.
+- Reproducer: `reproducer/finding_d_batch_writer_flush_amount.py`, driving the
+  real `BatchWriter` with the request captured, not sent.
+- Issue draft: `bug-reports/finding-d-batch-writer-flush-amount.md`
+  (**unfiled**).
+
+The drain-loop harness assumes DynamoDB processes at least one of the items it
+is *given*. Without that a retry loop over a service that never processes
+anything cannot terminate, and that is DynamoDB's behaviour rather than
+boto3's — it is what `UnprocessedItems` and #483 / PR #562 are about. The
+assumption makes the non-termination attributable only to boto3 handing the
+service nothing.
 
 ### Finding E (candidate) — `page_size(n)` for n ≤ 0
 
@@ -294,7 +353,7 @@ already prints the `PaginationConfig` dict boto3 hands to botocore, which shows
 | A ✅ | `collection.py:231` | `limit(0)`, `limit(-n)` | One resource returned after a real request; contract says none | Test the limit before consuming the item, in both loops |
 | B | `s3/transfer.py:272` | `multipart_chunksize=0`, `max_concurrency=0`, … | Exception from s3transfer/`ThreadPoolExecutor` naming neither boto3 nor the parameter | Range-check in `TransferConfig.__init__` |
 | C | `s3/transfer.py:197` | `preferred_transfer_client='crtt'` | Silently uses the classic client | Reject values outside `s3/constants.py` |
-| D | `dynamodb/table.py:99` | `BatchWriter(flush_amount=0)` | `__exit__` cannot drain the buffer — non-terminating | `if flush_amount < 1: raise ValueError` |
+| D ✅ | `dynamodb/table.py:99` | `BatchWriter(flush_amount=0)`, `flush_amount=30` | Empty batch rejected under the caller's name; `__exit__` non-terminating with validation off; over-size batch issued unchecked | `if not 1 <= flush_amount <= 25: raise ValueError` |
 | E | `collection.py:249` | `page_size(0)`, `page_size(-n)` | `PageSize: 0` forwarded to botocore | Same validation as A |
 
 ---
@@ -460,10 +519,10 @@ either. Buggy control: drop the `ALIAS` branch in `__setattr__`.
 
 `dynamodb/table.py:141-158`. Across a `_flush`, `len(items_to_send) +
 len(new_buffer) == len(old_buffer) + len(unprocessed)`, no request is dropped,
-and every unprocessed item is retried. This is the row that makes Tier 2
-Finding D precise: the same model, with `flush_amount >= 1` assumed, should
-verify — which is what shows the non-termination is caused by the missing
-guard and not by the loop shape.
+and every unprocessed item is retried. Finding D's control already carries the
+`flush_amount >= 1` half of this — the drain loop verifies once the guard is
+assumed — so what is left for this row is the per-flush accounting identity
+over the buffer's *contents*, which the length-only model cannot see.
 
 ---
 
@@ -499,23 +558,26 @@ Ordered by (severity × confidence) ÷ modelling cost, not by tier number.
 2. ~~**Tier 3 row 1** — `create_tags` `KeyError` after success.~~ **Done** —
    Finding G. One reachability question left open (does EC2 accept a tag with
    no `Value`), stated in the row.
-3. **Tier 2 rows C, D** — `preferred_transfer_client`, `BatchWriter`
-   non-termination. Both are self-contained; row D exercises the
-   unwinding-assertion technique (constraint C5) that later rows reuse.
-4. **Tier 5 rows 1, 2, 5** — the proof-of-absence core. Do these before the
+3. ~~**Tier 2 row D** — `BatchWriter(flush_amount)` unvalidated.~~ **Done** —
+   Finding D, confirmed on all three failure modes. The row was expected to
+   exercise the unwinding-assertion technique (C5) and instead showed the
+   loop **variant** is the better property: it does not depend on the bound.
+4. **Tier 2 row C** — `preferred_transfer_client`. Self-contained, and the
+   likeliest remaining live bug in Tier 2.
+5. **Tier 5 rows 1, 2, 5** — the proof-of-absence core. Do these before the
    remaining live-bug hunt: they are the deliverable that does not depend on
    finding anything, and row 5's mutation is the most instructive control in
    the plan.
-5. **Tier 1 rows 2, 3** — positive controls for Tier 2. Cheap, and they
+6. **Tier 1 rows 2, 3** — positive controls for Tier 2. Cheap, and they
    strengthen the Tier-2 issue text by showing where boto3 validates correctly.
-6. **Tier 2 row B, Tier 3 rows 2, 6** — the remaining plausible live bugs,
+7. **Tier 2 row B, Tier 3 rows 2, 6** — the remaining plausible live bugs,
    each gated on the reachability question stated in its row.
-7. **Tier 3 rows 4, 5 and Tier 4 rows 2–4** — latent preconditions and state
+8. **Tier 3 rows 4, 5 and Tier 4 rows 2–4** — latent preconditions and state
    invariants. Lower expected yield of *live* findings; high value as
    documented invariants.
-8. **Tier 3 rows 3, 7 and Tier 5 rows 3, 4, 6** — completeness.
+9. **Tier 3 rows 3, 7 and Tier 5 rows 3, 4, 6** — completeness.
 
-File Findings A, F and G once their issue drafts have been approved; do not
+File Findings A, D and G once their issue drafts have been approved; do not
 batch them behind the rest of the plan. They are independent — separate issues,
 different subsystems.
 
@@ -599,8 +661,8 @@ different subsystems.
 48. Expected runtime for `make verify` at that size: 3–6 minutes, dominated by
 the `--unwind`-heavy rows (Tier 2 D, Tier 3 4, Tier 4 4).
 
-Realistic finding yield, stated conservatively: **3 confirmed** (Findings A,
-F and G), **1 further likely** (Tier 2 row C), and the remainder splitting
+Realistic finding yield, stated conservatively: **4 confirmed** (Findings A,
+D, F and G), **1 further likely** (Tier 2 row C), and the remainder splitting
 between latent preconditions and proofs of absence. The
 prior PoCs' pattern held at roughly one-third of candidates surviving to a
 filed issue, and that is the right expectation here.
@@ -635,14 +697,15 @@ than restated.
 | Finding | Draft | Blocker |
 |---|---|---|
 | A — `.limit(n <= 0)` | `bug-reports/finding-a-collection-limit-nonpositive.md` | none — needs your go-ahead; must reference #4670 |
+| D — `BatchWriter(flush_amount)` unvalidated | `bug-reports/finding-d-batch-writer-flush-amount.md` | none — needs your go-ahead |
 | G — `create_tags` `KeyError` | `bug-reports/finding-g-create-tags-missing-value.md` | confirm on a live account that EC2 stores a `Value`-less tag |
 
 ---
 
 ## Provenance
 
-- **ESBMC**: https://github.com/esbmc/esbmc — version 8.4.0, default Bitwuzla
-  solver.
+- **ESBMC**: https://github.com/esbmc/esbmc — versions 8.4.0 and 8.5.0,
+  default Bitwuzla solver. Every verdict in this document holds on both.
 - **boto3**: https://github.com/boto/boto3 — pinned at commit `1b554d2`
   (version 1.43.75, 2026-08-20).
 - **Reproducers** run against the installed boto3 (1.34.46 here) with an AST
